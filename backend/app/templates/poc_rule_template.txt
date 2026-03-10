@@ -1,0 +1,37 @@
+import React from "react";
+
+const prd = `{{prd}}`;
+
+const features = [
+  { title: "需求分析", desc: "自动抽取关键痛点与流程" },
+  { title: "方案推荐", desc: "结构化输出可执行方案" },
+  { title: "交互预览", desc: "快速生成前端 Demo" },
+];
+
+export default function App() {
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-8">
+      <header className="mx-auto max-w-5xl space-y-2">
+        <h1 className="text-3xl font-semibold">POC Demo</h1>
+        <p className="text-slate-300">基于 PRD 自动生成的前端原型</p>
+      </header>
+      <main className="mx-auto mt-8 grid max-w-5xl gap-6">
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="text-xl font-medium">核心功能</h2>
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            {features.map((item) => (
+              <div key={item.title} className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                <h3 className="text-base font-semibold">{item.title}</h3>
+                <p className="mt-2 text-sm text-slate-300">{item.desc}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+          <h2 className="text-xl font-medium">PRD 摘要</h2>
+          <pre className="mt-4 whitespace-pre-wrap text-sm text-slate-300">{prd}</pre>
+        </section>
+      </main>
+    </div>
+  );
+}

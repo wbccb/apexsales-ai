@@ -1,5 +1,6 @@
 "use client"
 
+import { SandpackCodeEditor, SandpackLayout, SandpackPreview, SandpackProvider } from "@codesandbox/sandpack-react"
 import { MicVAD } from "@ricky0123/vad-web"
 import { useCallback, useMemo, useRef, useState } from "react"
 
@@ -10,6 +11,7 @@ type Utterance = {
   ts: string
 }
 
+// 后端 API 根地址
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
 const ASSET_BASE =
@@ -17,6 +19,7 @@ const ASSET_BASE =
 const ONNX_BASE =
   "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/"
 
+// 将 Float32Array 转换为 16-bit PCM WAV
 function encodeWav(samples: Float32Array, sampleRate: number) {
   const buffer = new ArrayBuffer(44 + samples.length * 2)
   const view = new DataView(buffer)
@@ -79,6 +82,13 @@ export default function Home() {
   const [editedMarkdown, setEditedMarkdown] = useState<string>("")
   const [saveLoading, setSaveLoading] = useState(false)
   const [saveResult, setSaveResult] = useState<string | null>(null)
+  const [pocLoading, setPocLoading] = useState(false)
+  const [pocError, setPocError] = useState<string | null>(null)
+  const [pocCode, setPocCode] = useState<string>("")
+  const [pocShareUuid, setPocShareUuid] = useState<string>("")
+  const [shareInput, setShareInput] = useState<string>("")
+  const [contractLoading, setContractLoading] = useState(false)
+  const [contractResult, setContractResult] = useState<string | null>(null)
   const sessionId = useMemo(() => {
     if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
       return crypto.randomUUID()
@@ -204,6 +214,7 @@ export default function Home() {
     setIsListening(true)
   }, [isListening, setupVad])
 
+  // 生成 PRD 总结并回填编辑区
   const generateSummary = useCallback(async () => {
     setSummaryLoading(true)
     setSummaryError(null)
@@ -230,6 +241,7 @@ export default function Home() {
     }
   }, [sessionId])
 
+  // 保存 PRD 编辑结果
   const savePrd = useCallback(async () => {
     if (!prdId) {
       setSaveResult("请先生成总结")
@@ -256,6 +268,83 @@ export default function Home() {
       setSaveLoading(false)
     }
   }, [editedMarkdown, prdId])
+
+  // 生成 POC 代码并回填 Sandpack
+  const generatePoc = useCallback(async () => {
+    if (!prdId) {
+      setPocError("请先生成 PRD")
+      return
+    }
+    setPocLoading(true)
+    setPocError(null)
+    try {
+      const response = await fetch(`${API_BASE}/prd/${prdId}/poc`, {
+        method: "POST"
+      })
+      if (!response.ok) {
+        throw new Error(`接口返回 ${response.status}`)
+      }
+      const data = await response.json()
+      setPocCode(data.code)
+      setPocShareUuid(data.share_uuid)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "未知错误"
+      setPocError(message)
+    } finally {
+      setPocLoading(false)
+    }
+  }, [prdId])
+
+  // 通过分享 UUID 拉取 POC 代码
+  const loadSharePoc = useCallback(async () => {
+    if (!shareInput.trim()) {
+      setPocError("请填写分享 UUID")
+      return
+    }
+    setPocLoading(true)
+    setPocError(null)
+    try {
+      const response = await fetch(`${API_BASE}/poc/${shareInput.trim()}`)
+      if (!response.ok) {
+        throw new Error(`接口返回 ${response.status}`)
+      }
+      const data = await response.json()
+      setPocCode(data.code)
+      setPocShareUuid(shareInput.trim())
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "未知错误"
+      setPocError(message)
+    } finally {
+      setPocLoading(false)
+    }
+  }, [shareInput])
+
+  // 生成合同并打开 PDF 下载链接
+  const generateContract = useCallback(async () => {
+    if (!prdId) {
+      setContractResult("请先生成 PRD")
+      return
+    }
+    setContractLoading(true)
+    setContractResult(null)
+    try {
+      const response = await fetch(`${API_BASE}/contract/${prdId}`, {
+        method: "POST"
+      })
+      if (!response.ok) {
+        throw new Error(`接口返回 ${response.status}`)
+      }
+      const data = await response.json()
+      const pdfUrl = `${API_BASE}${data.pdf_url}`
+      setContractResult(pdfUrl)
+      window.open(pdfUrl, "_blank", "noopener,noreferrer")
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "未知错误"
+      setContractResult(message)
+    } finally {
+      setContractLoading(false)
+    }
+  }, [prdId])
 
   return (
     <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 p-8">
@@ -417,6 +506,67 @@ export default function Home() {
               已生成原始 PRD，可在上方编辑并保存
             </div>
           ) : null}
+        </div>
+      </section>
+      <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
+        <h2 className="text-xl font-medium">阶段三：POC 生成与预览</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className="rounded-full bg-purple-500 px-5 py-2 text-sm font-medium text-white"
+            onClick={generatePoc}
+            disabled={pocLoading}
+          >
+            {pocLoading ? "生成中..." : "生成 POC"}
+          </button>
+          <input
+            value={shareInput}
+            onChange={(event) => setShareInput(event.target.value)}
+            placeholder="分享 UUID"
+            className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100"
+          />
+          <button
+            className="rounded-full bg-slate-700 px-4 py-2 text-xs font-medium text-white"
+            onClick={loadSharePoc}
+            disabled={pocLoading}
+          >
+            打开分享
+          </button>
+          <div className="text-sm text-slate-300">
+            {pocShareUuid ? `当前分享：${pocShareUuid}` : "尚未生成分享"}
+          </div>
+        </div>
+        {pocError ? (
+          <div className="rounded-lg border border-rose-600/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+            {pocError}
+          </div>
+        ) : null}
+        {/* Sandpack 负责运行 POC 代码并渲染预览 */}
+        <SandpackProvider
+          template="react-ts"
+          files={{
+            "/App.tsx": pocCode || "export default function App(){return <div />}"
+          }}
+          options={{ visibleFiles: ["/App.tsx"] }}
+        >
+          <SandpackLayout>
+            <SandpackCodeEditor style={{ height: 360 }} />
+            <SandpackPreview style={{ height: 360 }} />
+          </SandpackLayout>
+        </SandpackProvider>
+      </section>
+      <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
+        <h2 className="text-xl font-medium">阶段四：合同导出</h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            className="rounded-full bg-emerald-500 px-5 py-2 text-sm font-medium text-slate-950"
+            onClick={generateContract}
+            disabled={contractLoading}
+          >
+            {contractLoading ? "导出中..." : "导出合同"}
+          </button>
+          <div className="text-sm text-slate-300">
+            {contractResult ? contractResult : "尚未生成合同"}
+          </div>
         </div>
       </section>
     </main>

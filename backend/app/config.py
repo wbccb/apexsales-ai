@@ -63,3 +63,45 @@ def get_prd_prompt_template() -> str:
         "会议逐字稿：\n"
         "{{transcript}}\n"
     )
+
+
+def get_poc_mode() -> str:
+    return os.getenv("POC_MODE", "rule").lower()
+
+
+def get_poc_prompt_template() -> str:
+    return (
+        "你是资深前端工程师。\n"
+        "请将以下 PRD 转换为单页面 React 应用代码：\n"
+        "1. 使用 Tailwind CSS\n"
+        "2. 必须包含假数据\n"
+        "3. 不要写任何后端请求\n"
+        "4. 只输出代码\n"
+        "PRD：\n"
+        "{{prd}}\n"
+    )
+
+
+def get_contract_title() -> str:
+    return os.getenv("CONTRACT_TITLE", "销售 AI 项目合作合同")
+
+
+def get_poc_rule_template_path() -> str:
+    return os.getenv(
+        "POC_RULE_TEMPLATE_PATH",
+        os.path.join(os.path.dirname(__file__), "templates", "poc_rule_template.txt")
+    )
+
+
+def get_contract_template_path() -> str:
+    return os.getenv(
+        "CONTRACT_TEMPLATE_PATH",
+        os.path.join(os.path.dirname(__file__), "templates", "contract_template.txt")
+    )
+
+
+def get_contract_style_path() -> str:
+    return os.getenv(
+        "CONTRACT_STYLE_PATH",
+        os.path.join(os.path.dirname(__file__), "templates", "contract_style.json")
+    )
