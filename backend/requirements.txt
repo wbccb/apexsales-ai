@@ -9,3 +9,4 @@ numpy==1.26.4
 soundfile==0.12.1
 requests==2.32.3
 reportlab==4.2.2
+pypdf==5.4.0

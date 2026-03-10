@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 import json
 import os
+import re
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional, cast
 from uuid import uuid4
 
 import numpy as np
 import requests
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from funasr import AutoModel
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from resemblyzer import VoiceEncoder, preprocess_wav
+from pypdf import PdfReader
 
 from .config import (
     get_asr_device,
@@ -57,6 +59,10 @@ pocs_by_share = cast(Dict[str, str], {})
 contracts_by_id = cast(Dict[str, Dict[str, Any]], {})
 # 声纹内存缓存
 voice_embeddings_by_user = cast(Dict[str, np.ndarray], {})
+# 知识库文档内存缓存
+knowledge_documents_by_id = cast(Dict[str, Dict[str, Any]], {})
+# 文档切片内存缓存
+knowledge_chunks_by_doc = cast(Dict[str, List[Dict[str, Any]]], {})
 # 模型懒加载容器
 asr_model = None
 voice_encoder = None
@@ -185,6 +191,54 @@ class ContractResponse(BaseModel):
     pdf_url: str
 
 
+class KnowledgeUploadResponse(BaseModel):
+    document_id: str
+    status: str
+    filename: str
+
+
+class KnowledgeDocumentItem(BaseModel):
+    document_id: str
+    filename: str
+    status: str
+    owner_user_id: Optional[str]
+    business_tag: Optional[str]
+    created_at: str
+    updated_at: str
+    chunk_count: int
+    error_message: Optional[str]
+
+
+class KnowledgeDocumentsResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    documents: List[KnowledgeDocumentItem]
+
+
+class KnowledgeReindexResponse(BaseModel):
+    document_id: str
+    status: str
+
+
+class KnowledgeRetrieveRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    business_tag: Optional[str] = None
+
+
+class KnowledgeMatch(BaseModel):
+    document_id: str
+    chunk_id: str
+    score: float
+    page_no: Optional[int]
+    content: str
+
+
+class KnowledgeRetrieveResponse(BaseModel):
+    matches: List[KnowledgeMatch]
+
+
 @app.get("/health")
 # 健康检查接口
 def health() -> dict:
@@ -251,6 +305,102 @@ def asr_transcribe(file_path: str) -> str:
         return ""
     text = res[0].get("text", "")
     return rich_transcription_postprocess(text)
+
+
+def get_knowledge_storage_dir() -> str:
+    directory = os.path.join(os.path.dirname(__file__), "..", "storage", "knowledge")
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+    return abs_directory
+
+
+def save_upload_to_storage(file: UploadFile, suffix: str) -> str:
+    storage_dir = get_knowledge_storage_dir()
+    file_path = os.path.join(storage_dir, f"{uuid4().hex}{suffix}")
+    with open(file_path, "wb") as output:
+        output.write(cast(bytes, file.file.read()))
+    return file_path
+
+
+def tokenize_text(text: str) -> List[str]:
+    return re.findall(r"[\u4e00-\u9fffA-Za-z0-9_]+", text.lower())
+
+
+def text_to_embedding(text: str, dim: int = 256) -> np.ndarray:
+    embedding = np.zeros(dim, dtype=np.float32)
+    tokens = tokenize_text(text)
+    if not tokens:
+        return embedding
+    for token in tokens:
+        index = sum(token.encode("utf-8")) % dim
+        embedding[index] += 1.0
+    norm = np.linalg.norm(embedding)
+    if norm == 0:
+        return embedding
+    return embedding / norm
+
+
+def split_text_to_chunks(text: str, max_chars: int = 500, overlap: int = 100) -> List[str]:
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+    if len(cleaned) <= max_chars:
+        return [cleaned]
+    chunks: List[str] = []
+    start = 0
+    step = max(1, max_chars - overlap)
+    while start < len(cleaned):
+        end = min(len(cleaned), start + max_chars)
+        chunk = cleaned[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(cleaned):
+            break
+        start += step
+    return chunks
+
+
+def extract_pdf_pages(file_path: str) -> List[str]:
+    reader = PdfReader(file_path)
+    pages: List[str] = []
+    for page in reader.pages:
+        pages.append((page.extract_text() or "").strip())
+    return pages
+
+
+def index_knowledge_document(document_id: str) -> None:
+    document = knowledge_documents_by_id.get(document_id)
+    if document is None:
+        return
+    document["status"] = "processing"
+    document["updated_at"] = datetime.now(timezone.utc).isoformat()
+    knowledge_chunks_by_doc[document_id] = []
+    try:
+        pages = extract_pdf_pages(str(document["file_path"]))
+        chunk_index = 0
+        for page_no, page_text in enumerate(pages, start=1):
+            for chunk_text in split_text_to_chunks(page_text):
+                chunk_id = str(uuid4())
+                embedding = text_to_embedding(chunk_text)
+                knowledge_chunks_by_doc[document_id].append(
+                    {
+                        "chunk_id": chunk_id,
+                        "document_id": document_id,
+                        "chunk_index": chunk_index,
+                        "page_no": page_no,
+                        "content": chunk_text,
+                        "token_count": len(tokenize_text(chunk_text)),
+                        "embedding": embedding
+                    }
+                )
+                chunk_index += 1
+        document["status"] = "ready"
+        document["updated_at"] = datetime.now(timezone.utc).isoformat()
+        document["error_message"] = None
+    except Exception as exc:
+        document["status"] = "failed"
+        document["updated_at"] = datetime.now(timezone.utc).isoformat()
+        document["error_message"] = str(exc)
 
 
 def build_transcript(utterances: List[Dict[str, Any]]) -> str:
@@ -480,6 +630,134 @@ def render_contract_pdf(prd_markdown: str, file_path: str) -> None:
         pdf.drawString(margin_left, y, line)
         y -= line_height
     pdf.save()
+
+
+@app.post("/knowledge/upload", response_model=KnowledgeUploadResponse)
+async def upload_knowledge(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    owner_user_id: Optional[str] = Form(None),
+    business_tag: Optional[str] = Form(None)
+) -> KnowledgeUploadResponse:
+    if (file.filename or "").lower().endswith(".pdf") is False:
+        raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
+    file_path = save_upload_to_storage(file, ".pdf")
+    document_id = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    knowledge_documents_by_id[document_id] = {
+        "id": document_id,
+        "filename": file.filename or f"{document_id}.pdf",
+        "file_path": file_path,
+        "status": "pending",
+        "owner_user_id": owner_user_id,
+        "business_tag": business_tag,
+        "created_at": now,
+        "updated_at": now,
+        "error_message": None
+    }
+    background_tasks.add_task(index_knowledge_document, document_id)
+    return KnowledgeUploadResponse(
+        document_id=document_id,
+        status="pending",
+        filename=file.filename or f"{document_id}.pdf"
+    )
+
+
+@app.get("/knowledge/documents", response_model=KnowledgeDocumentsResponse)
+def list_knowledge_documents(
+    status: Optional[str] = None,
+    owner_user_id: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20
+) -> KnowledgeDocumentsResponse:
+    safe_page = max(1, page)
+    safe_page_size = max(1, min(100, page_size))
+    docs = list(knowledge_documents_by_id.values())
+    if status:
+        docs = [doc for doc in docs if doc.get("status") == status]
+    if owner_user_id:
+        docs = [doc for doc in docs if doc.get("owner_user_id") == owner_user_id]
+    docs.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    page_docs = docs[start:end]
+    items = [
+        KnowledgeDocumentItem(
+            document_id=str(item["id"]),
+            filename=str(item["filename"]),
+            status=str(item["status"]),
+            owner_user_id=cast(Optional[str], item.get("owner_user_id")),
+            business_tag=cast(Optional[str], item.get("business_tag")),
+            created_at=str(item["created_at"]),
+            updated_at=str(item["updated_at"]),
+            chunk_count=len(knowledge_chunks_by_doc.get(str(item["id"]), [])),
+            error_message=cast(Optional[str], item.get("error_message"))
+        )
+        for item in page_docs
+    ]
+    return KnowledgeDocumentsResponse(
+        total=len(docs),
+        page=safe_page,
+        page_size=safe_page_size,
+        documents=items
+    )
+
+
+@app.post("/knowledge/reindex/{document_id}", response_model=KnowledgeReindexResponse)
+def reindex_knowledge_document(
+    document_id: str,
+    background_tasks: BackgroundTasks
+) -> KnowledgeReindexResponse:
+    document = knowledge_documents_by_id.get(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    document["status"] = "pending"
+    document["updated_at"] = datetime.now(timezone.utc).isoformat()
+    document["error_message"] = None
+    background_tasks.add_task(index_knowledge_document, document_id)
+    return KnowledgeReindexResponse(document_id=document_id, status="pending")
+
+
+@app.post("/knowledge/retrieve", response_model=KnowledgeRetrieveResponse)
+def retrieve_knowledge(payload: KnowledgeRetrieveRequest) -> KnowledgeRetrieveResponse:
+    query = payload.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query 不能为空")
+    top_k = max(1, min(20, payload.top_k))
+    query_embedding = text_to_embedding(query)
+    candidates: List[Dict[str, Any]] = []
+    for document in knowledge_documents_by_id.values():
+        if document.get("status") != "ready":
+            continue
+        if payload.business_tag and document.get("business_tag") != payload.business_tag:
+            continue
+        document_id = str(document["id"])
+        for chunk in knowledge_chunks_by_doc.get(document_id, []):
+            score = cosine_similarity(
+                cast(np.ndarray, chunk["embedding"]),
+                query_embedding
+            )
+            candidates.append(
+                {
+                    "document_id": document_id,
+                    "chunk_id": str(chunk["chunk_id"]),
+                    "score": score,
+                    "page_no": cast(Optional[int], chunk.get("page_no")),
+                    "content": str(chunk["content"])
+                }
+            )
+    candidates.sort(key=lambda item: cast(float, item["score"]), reverse=True)
+    matches = [
+        KnowledgeMatch(
+            document_id=str(item["document_id"]),
+            chunk_id=str(item["chunk_id"]),
+            score=float(item["score"]),
+            page_no=cast(Optional[int], item.get("page_no")),
+            content=str(item["content"])
+        )
+        for item in candidates[:top_k]
+    ]
+    return KnowledgeRetrieveResponse(matches=matches)
 
 
 @app.post("/voice/register", response_model=VoiceRegisterResponse)
