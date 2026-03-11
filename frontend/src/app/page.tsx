@@ -11,6 +11,14 @@ type Utterance = {
   ts: string
 }
 
+type Citation = {
+  document_id: string
+  chunk_id: string
+  score: number
+  page_no: number | null
+  snippet: string
+}
+
 // 后端 API 根地址
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
@@ -77,6 +85,10 @@ export default function Home() {
   const [verifyResult, setVerifyResult] = useState<string | null>(null)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState<string | null>(null)
+  const [ragEnabled, setRagEnabled] = useState(true)
+  const [ragTopK, setRagTopK] = useState(5)
+  const [ragUsed, setRagUsed] = useState(false)
+  const [citations, setCitations] = useState<Citation[]>([])
   const [prdId, setPrdId] = useState<string | null>(null)
   const [prdMarkdown, setPrdMarkdown] = useState<string>("")
   const [editedMarkdown, setEditedMarkdown] = useState<string>("")
@@ -223,7 +235,14 @@ export default function Home() {
       const response = await fetch(
         `${API_BASE}/session/${sessionId}/summary`,
         {
-          method: "POST"
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            rag_enabled: ragEnabled,
+            top_k: ragTopK
+          })
         }
       )
       if (!response.ok) {
@@ -233,13 +252,15 @@ export default function Home() {
       setPrdId(data.prd_id)
       setPrdMarkdown(data.markdown)
       setEditedMarkdown(data.markdown)
+      setRagUsed(Boolean(data.rag_used))
+      setCitations(Array.isArray(data.citations) ? data.citations : [])
     } catch (err) {
       const message = err instanceof Error ? err.message : "未知错误"
       setSummaryError(message)
     } finally {
       setSummaryLoading(false)
     }
-  }, [sessionId])
+  }, [ragEnabled, ragTopK, sessionId])
 
   // 保存 PRD 编辑结果
   const savePrd = useCallback(async () => {
@@ -482,6 +503,23 @@ export default function Home() {
           <div className="text-sm text-slate-300">
             {prdId ? `当前 PRD：${prdId}` : "未生成 PRD"}
           </div>
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={ragEnabled}
+              onChange={(event) => setRagEnabled(event.target.checked)}
+            />
+            启用 RAG
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={ragTopK}
+            onChange={(event) => setRagTopK(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
+            className="w-24 rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100"
+            placeholder="TopK"
+          />
         </div>
         {summaryError ? (
           <div className="rounded-lg border border-rose-600/40 bg-rose-500/10 p-3 text-sm text-rose-200">
@@ -504,6 +542,24 @@ export default function Home() {
           {prdMarkdown ? (
             <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-400">
               已生成原始 PRD，可在上方编辑并保存
+            </div>
+          ) : null}
+          {prdMarkdown ? (
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+              {ragUsed ? "本次总结已使用 RAG 检索结果" : "本次总结未命中可用检索结果"}
+            </div>
+          ) : null}
+          {citations.length > 0 ? (
+            <div className="grid gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="text-xs text-slate-400">引用来源</div>
+              {citations.map((item) => (
+                <div key={item.chunk_id} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
+                  <div>
+                    doc={item.document_id} chunk={item.chunk_id} page={item.page_no ?? "-"} score={Number(item.score).toFixed(4)}
+                  </div>
+                  <div className="mt-1 text-slate-400">{item.snippet}</div>
+                </div>
+              ))}
             </div>
           ) : null}
         </div>
@@ -534,6 +590,16 @@ export default function Home() {
           <div className="text-sm text-slate-300">
             {pocShareUuid ? `当前分享：${pocShareUuid}` : "尚未生成分享"}
           </div>
+          {pocShareUuid ? (
+            <a
+              href={`/share/${pocShareUuid}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-indigo-300 underline"
+            >
+              打开分享页
+            </a>
+          ) : null}
         </div>
         {pocError ? (
           <div className="rounded-lg border border-rose-600/40 bg-rose-500/10 p-3 text-sm text-rose-200">

@@ -63,6 +63,8 @@ voice_embeddings_by_user = cast(Dict[str, np.ndarray], {})
 knowledge_documents_by_id = cast(Dict[str, Dict[str, Any]], {})
 # 文档切片内存缓存
 knowledge_chunks_by_doc = cast(Dict[str, List[Dict[str, Any]]], {})
+# PRD 引用来源内存缓存
+prd_citations_by_prd = cast(Dict[str, List[Dict[str, Any]]], {})
 # 模型懒加载容器
 asr_model = None
 voice_encoder = None
@@ -164,6 +166,22 @@ class SessionUtterancesResponse(BaseModel):
 class SummaryResponse(BaseModel):
     prd_id: str
     markdown: str
+    citations: List["CitationItem"] = []
+    rag_used: bool = False
+
+
+class SummaryRequest(BaseModel):
+    rag_enabled: bool = True
+    top_k: int = 5
+    business_tag: Optional[str] = None
+
+
+class CitationItem(BaseModel):
+    document_id: str
+    chunk_id: str
+    score: float
+    page_no: Optional[int]
+    snippet: str
 
 
 class PrdSaveRequest(BaseModel):
@@ -401,6 +419,153 @@ def index_knowledge_document(document_id: str) -> None:
         document["status"] = "failed"
         document["updated_at"] = datetime.now(timezone.utc).isoformat()
         document["error_message"] = str(exc)
+    save_runtime_state()
+
+
+def get_storage_root_dir() -> str:
+    directory = os.path.join(os.path.dirname(__file__), "..", "storage")
+    abs_directory = os.path.abspath(directory)
+    os.makedirs(abs_directory, exist_ok=True)
+    return abs_directory
+
+
+def get_runtime_state_path() -> str:
+    return os.path.join(get_storage_root_dir(), "runtime_state.json")
+
+
+def get_contract_storage_dir() -> str:
+    directory = os.path.join(get_storage_root_dir(), "contracts")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def serialize_voice_embeddings() -> Dict[str, List[float]]:
+    payload: Dict[str, List[float]] = {}
+    for user_id, embedding in voice_embeddings_by_user.items():
+        payload[user_id] = [float(value) for value in embedding.tolist()]
+    return payload
+
+
+def serialize_knowledge_chunks() -> Dict[str, List[Dict[str, Any]]]:
+    payload: Dict[str, List[Dict[str, Any]]] = {}
+    for document_id, chunks in knowledge_chunks_by_doc.items():
+        payload[document_id] = []
+        for chunk in chunks:
+            payload[document_id].append(
+                {
+                    "chunk_id": str(chunk.get("chunk_id", "")),
+                    "document_id": str(chunk.get("document_id", "")),
+                    "chunk_index": int(chunk.get("chunk_index", 0)),
+                    "page_no": cast(Optional[int], chunk.get("page_no")),
+                    "content": str(chunk.get("content", "")),
+                    "token_count": int(chunk.get("token_count", 0)),
+                    "embedding": [
+                        float(value)
+                        for value in cast(np.ndarray, chunk.get("embedding", np.zeros(256, dtype=np.float32))).tolist()
+                    ]
+                }
+            )
+    return payload
+
+
+def save_runtime_state() -> None:
+    payload = {
+        "utterances_by_session": utterances_by_session,
+        "prds_by_id": prds_by_id,
+        "prds_by_session": prds_by_session,
+        "pocs_by_id": pocs_by_id,
+        "pocs_by_share": pocs_by_share,
+        "contracts_by_id": contracts_by_id,
+        "voice_embeddings_by_user": serialize_voice_embeddings(),
+        "knowledge_documents_by_id": knowledge_documents_by_id,
+        "knowledge_chunks_by_doc": serialize_knowledge_chunks(),
+        "prd_citations_by_prd": prd_citations_by_prd
+    }
+    with open(get_runtime_state_path(), "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False)
+
+
+def load_runtime_state() -> None:
+    path = get_runtime_state_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return
+    utterances_by_session.clear()
+    utterances_by_session.update(cast(Dict[str, List[Dict[str, Any]]], payload.get("utterances_by_session", {})))
+    prds_by_id.clear()
+    prds_by_id.update(cast(Dict[str, Dict[str, Any]], payload.get("prds_by_id", {})))
+    prds_by_session.clear()
+    prds_by_session.update(cast(Dict[str, str], payload.get("prds_by_session", {})))
+    pocs_by_id.clear()
+    pocs_by_id.update(cast(Dict[str, Dict[str, Any]], payload.get("pocs_by_id", {})))
+    pocs_by_share.clear()
+    pocs_by_share.update(cast(Dict[str, str], payload.get("pocs_by_share", {})))
+    contracts_by_id.clear()
+    contracts_by_id.update(cast(Dict[str, Dict[str, Any]], payload.get("contracts_by_id", {})))
+    voice_embeddings_by_user.clear()
+    raw_voice = cast(Dict[str, List[float]], payload.get("voice_embeddings_by_user", {}))
+    for user_id, values in raw_voice.items():
+        voice_embeddings_by_user[user_id] = np.array(values, dtype=np.float32)
+    knowledge_documents_by_id.clear()
+    knowledge_documents_by_id.update(
+        cast(Dict[str, Dict[str, Any]], payload.get("knowledge_documents_by_id", {}))
+    )
+    knowledge_chunks_by_doc.clear()
+    raw_chunks = cast(Dict[str, List[Dict[str, Any]]], payload.get("knowledge_chunks_by_doc", {}))
+    for document_id, chunks in raw_chunks.items():
+        knowledge_chunks_by_doc[document_id] = []
+        for chunk in chunks:
+            knowledge_chunks_by_doc[document_id].append(
+                {
+                    "chunk_id": str(chunk.get("chunk_id", "")),
+                    "document_id": str(chunk.get("document_id", "")),
+                    "chunk_index": int(chunk.get("chunk_index", 0)),
+                    "page_no": cast(Optional[int], chunk.get("page_no")),
+                    "content": str(chunk.get("content", "")),
+                    "token_count": int(chunk.get("token_count", 0)),
+                    "embedding": np.array(cast(List[float], chunk.get("embedding", [])), dtype=np.float32)
+                }
+            )
+    prd_citations_by_prd.clear()
+    prd_citations_by_prd.update(cast(Dict[str, List[Dict[str, Any]]], payload.get("prd_citations_by_prd", {})))
+
+
+def search_knowledge_matches(
+    query: str,
+    top_k: int,
+    business_tag: Optional[str]
+) -> List[Dict[str, Any]]:
+    query_embedding = text_to_embedding(query)
+    candidates: List[Dict[str, Any]] = []
+    for document in knowledge_documents_by_id.values():
+        if document.get("status") != "ready":
+            continue
+        if business_tag and document.get("business_tag") != business_tag:
+            continue
+        document_id = str(document["id"])
+        for chunk in knowledge_chunks_by_doc.get(document_id, []):
+            score = cosine_similarity(
+                cast(np.ndarray, chunk["embedding"]),
+                query_embedding
+            )
+            candidates.append(
+                {
+                    "document_id": document_id,
+                    "chunk_id": str(chunk["chunk_id"]),
+                    "score": score,
+                    "page_no": cast(Optional[int], chunk.get("page_no")),
+                    "content": str(chunk["content"])
+                }
+            )
+    candidates.sort(key=lambda item: cast(float, item["score"]), reverse=True)
+    return candidates[:top_k]
+
+
+load_runtime_state()
 
 
 def build_transcript(utterances: List[Dict[str, Any]]) -> str:
@@ -411,6 +576,43 @@ def build_transcript(utterances: List[Dict[str, Any]]) -> str:
         text = item.get("text", "")
         if text:
             lines.append(f"[{speaker}] {text}")
+    return "\n".join(lines)
+
+
+def build_rag_context(citations: List[Dict[str, Any]]) -> str:
+    if not citations:
+        return ""
+    context_lines: List[str] = []
+    for item in citations:
+        context_lines.append(
+            f"- doc={item['document_id']} chunk={item['chunk_id']} page={item.get('page_no')} score={float(item['score']):.4f}"
+        )
+        context_lines.append(f"  内容：{item['content']}")
+    return "\n".join(context_lines)
+
+
+def build_citation_models(citations: List[Dict[str, Any]]) -> List[CitationItem]:
+    return [
+        CitationItem(
+            document_id=str(item["document_id"]),
+            chunk_id=str(item["chunk_id"]),
+            score=float(item["score"]),
+            page_no=cast(Optional[int], item.get("page_no")),
+            snippet=str(item["content"])[:240]
+        )
+        for item in citations
+    ]
+
+
+def append_citations_to_markdown(markdown: str, citations: List[CitationItem]) -> str:
+    if not citations:
+        return markdown
+    lines = [markdown, "", "## 来源依据"]
+    for citation in citations:
+        lines.append(
+            f"- document_id={citation.document_id} chunk_id={citation.chunk_id} page_no={citation.page_no} score={citation.score:.4f}"
+        )
+        lines.append(f"  - {citation.snippet}")
     return "\n".join(lines)
 
 
@@ -588,6 +790,50 @@ def wrap_contract_text(text: str, max_chars: int) -> List[str]:
     return lines
 
 
+def extract_quote_payload(markdown: str) -> Optional[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for line in markdown.splitlines():
+        if ("价格" not in line) and ("报价" not in line) and ("price" not in line.lower()):
+            continue
+        values = re.findall(r"\d+(?:\.\d+)?", line)
+        if not values:
+            continue
+        unit_price = float(values[0])
+        quantity = float(values[1]) if len(values) > 1 else 1.0
+        tax_rate = float(values[2]) if len(values) > 2 else 0.0
+        subtotal = unit_price * quantity
+        total = subtotal * (1.0 + tax_rate / 100.0)
+        items.append(
+            {
+                "name": line.strip()[:80],
+                "unit_price": unit_price,
+                "quantity": quantity,
+                "tax_rate": tax_rate,
+                "subtotal": round(subtotal, 2),
+                "total": round(total, 2)
+            }
+        )
+    if not items:
+        return None
+    grand_total = round(sum(float(item["total"]) for item in items), 2)
+    return {
+        "items": items,
+        "grand_total": grand_total,
+        "payment_terms": "50% 预付款，50% 交付后支付"
+    }
+
+
+def format_quote_payload(quote_payload: Dict[str, Any]) -> str:
+    lines: List[str] = []
+    for item in cast(List[Dict[str, Any]], quote_payload.get("items", [])):
+        lines.append(
+            f"- 项目：{item.get('name')}；单价：{item.get('unit_price')}；数量：{item.get('quantity')}；税率：{item.get('tax_rate')}%；总价：{item.get('total')}"
+        )
+    lines.append(f"- 合计：{quote_payload.get('grand_total')}")
+    lines.append(f"- 付款节点：{quote_payload.get('payment_terms')}")
+    return "\n".join(lines)
+
+
 def render_contract_pdf(prd_markdown: str, file_path: str) -> None:
     style = load_json_template(get_contract_style_path(), DEFAULT_CONTRACT_STYLE)
     title = style.get("title") or get_contract_title()
@@ -655,6 +901,7 @@ async def upload_knowledge(
         "updated_at": now,
         "error_message": None
     }
+    save_runtime_state()
     background_tasks.add_task(index_knowledge_document, document_id)
     return KnowledgeUploadResponse(
         document_id=document_id,
@@ -714,6 +961,7 @@ def reindex_knowledge_document(
     document["status"] = "pending"
     document["updated_at"] = datetime.now(timezone.utc).isoformat()
     document["error_message"] = None
+    save_runtime_state()
     background_tasks.add_task(index_knowledge_document, document_id)
     return KnowledgeReindexResponse(document_id=document_id, status="pending")
 
@@ -724,29 +972,7 @@ def retrieve_knowledge(payload: KnowledgeRetrieveRequest) -> KnowledgeRetrieveRe
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
     top_k = max(1, min(20, payload.top_k))
-    query_embedding = text_to_embedding(query)
-    candidates: List[Dict[str, Any]] = []
-    for document in knowledge_documents_by_id.values():
-        if document.get("status") != "ready":
-            continue
-        if payload.business_tag and document.get("business_tag") != payload.business_tag:
-            continue
-        document_id = str(document["id"])
-        for chunk in knowledge_chunks_by_doc.get(document_id, []):
-            score = cosine_similarity(
-                cast(np.ndarray, chunk["embedding"]),
-                query_embedding
-            )
-            candidates.append(
-                {
-                    "document_id": document_id,
-                    "chunk_id": str(chunk["chunk_id"]),
-                    "score": score,
-                    "page_no": cast(Optional[int], chunk.get("page_no")),
-                    "content": str(chunk["content"])
-                }
-            )
-    candidates.sort(key=lambda item: cast(float, item["score"]), reverse=True)
+    candidates = search_knowledge_matches(query=query, top_k=top_k, business_tag=payload.business_tag)
     matches = [
         KnowledgeMatch(
             document_id=str(item["document_id"]),
@@ -770,6 +996,7 @@ async def voice_register(
     try:
         embedding = compute_embedding(temp_path)
         voice_embeddings_by_user[user_id] = embedding
+        save_runtime_state()
     finally:
         try:
             os.remove(temp_path)
@@ -841,6 +1068,7 @@ async def transcribe(
         "similarity": similarity
     }
     utterances_by_session.setdefault(session_id, []).append(utterance)
+    save_runtime_state()
     return UtteranceResponse(
         utterance_id=utterance_id,
         speaker=speaker,
@@ -861,21 +1089,45 @@ def get_session_utterances(session_id: str) -> SessionUtterancesResponse:
 
 @app.post("/session/{session_id}/summary", response_model=SummaryResponse)
 # 会话总结生成接口
-def session_summary(session_id: str) -> SummaryResponse:
+def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -> SummaryResponse:
     utterances = utterances_by_session.get(session_id, [])
     if not utterances:
         raise HTTPException(status_code=400, detail="会话暂无逐字稿")
+    rag_enabled = True if payload is None else payload.rag_enabled
+    top_k = 5 if payload is None else max(1, min(20, payload.top_k))
+    business_tag = None if payload is None else payload.business_tag
     transcript = build_transcript(utterances)
-    markdown = generate_prd_markdown(transcript)
+    retrieved: List[Dict[str, Any]] = []
+    if rag_enabled:
+        retrieved = search_knowledge_matches(
+            query=transcript,
+            top_k=top_k,
+            business_tag=business_tag
+        )
+    citations = build_citation_models(retrieved)
+    rag_context = build_rag_context(retrieved)
+    summary_input = transcript
+    if rag_context:
+        summary_input = f"{transcript}\n\n[检索增强上下文]\n{rag_context}"
+    markdown = generate_prd_markdown(summary_input)
+    markdown = append_citations_to_markdown(markdown, citations)
     prd_id = str(uuid4())
     prds_by_id[prd_id] = {
         "id": prd_id,
         "session_id": session_id,
         "markdown": markdown,
-        "edited_markdown": None
+        "edited_markdown": None,
+        "rag_enabled": rag_enabled
     }
+    prd_citations_by_prd[prd_id] = [citation.model_dump() for citation in citations]
     prds_by_session[session_id] = prd_id
-    return SummaryResponse(prd_id=prd_id, markdown=markdown)
+    save_runtime_state()
+    return SummaryResponse(
+        prd_id=prd_id,
+        markdown=markdown,
+        citations=citations,
+        rag_used=len(citations) > 0
+    )
 
 
 @app.post("/prd/{prd_id}/save", response_model=PrdSaveResponse)
@@ -885,6 +1137,7 @@ def save_prd(prd_id: str, payload: PrdSaveRequest) -> PrdSaveResponse:
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD 不存在")
     prd["edited_markdown"] = payload.edited_markdown
+    save_runtime_state()
     return PrdSaveResponse(prd_id=prd_id, saved=True)
 
 
@@ -905,6 +1158,7 @@ def generate_poc(prd_id: str) -> PocResponse:
         "share_uuid": share_uuid
     }
     pocs_by_share[share_uuid] = poc_id
+    save_runtime_state()
     return PocResponse(poc_id=poc_id, code=code, share_uuid=share_uuid)
 
 
@@ -927,15 +1181,21 @@ def generate_contract(prd_id: str) -> ContractResponse:
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD 不存在")
     markdown = prd.get("edited_markdown") or prd.get("markdown") or ""
-    with NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-        file_path = temp_file.name
-    render_contract_pdf(markdown, file_path)
+    quote_payload = extract_quote_payload(markdown)
+    contract_body = markdown
+    if quote_payload:
+        contract_body = f"{markdown}\n\n## 结构化报价\n{format_quote_payload(quote_payload)}"
     contract_id = str(uuid4())
+    contract_dir = get_contract_storage_dir()
+    file_path = os.path.join(contract_dir, f"{contract_id}.pdf")
+    render_contract_pdf(contract_body, file_path)
     contracts_by_id[contract_id] = {
         "id": contract_id,
         "prd_id": prd_id,
-        "pdf_path": file_path
+        "pdf_path": file_path,
+        "quote_payload": quote_payload
     }
+    save_runtime_state()
     pdf_url = f"/contract/{contract_id}/download"
     return ContractResponse(contract_id=contract_id, pdf_url=pdf_url)
 
