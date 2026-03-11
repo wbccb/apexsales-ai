@@ -88,6 +88,7 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
   const [verifyNext, setVerifyNext] = useState(false)
   const [verifyResult, setVerifyResult] = useState<string | null>(null)
   const [asrEngineStatus, setAsrEngineStatus] = useState("未转写")
+  const [hasRegisteredVoiceprint, setHasRegisteredVoiceprint] = useState(false)
   const registerNextRef = useRef(false)
   const verifyNextRef = useRef(false)
 
@@ -141,6 +142,7 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
           }
           const data = await response.json()
           setRegisterResult(`已注册销售声纹：${data.user_id}`)
+          setHasRegisteredVoiceprint(true)
           return
         }
         if (mode === "verify") {
@@ -250,6 +252,8 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
     setIsListening(true)
   }, [isListening, setupVad])
 
+  const canStartListening = isListening || hasRegisteredVoiceprint
+
   return (
     <>
       <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
@@ -316,14 +320,22 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
         <div className="flex flex-wrap items-center gap-3">
           <button
             className={`rounded-full px-5 py-2 text-sm font-medium transition ${
-              isListening
-                ? "bg-emerald-500 text-slate-950"
-                : "bg-slate-700 text-white"
+              canStartListening
+                ? isListening
+                  ? "bg-emerald-500 text-slate-950"
+                  : "bg-slate-700 text-white"
+                : "cursor-not-allowed bg-slate-800 text-slate-500"
             }`}
+            disabled={!canStartListening}
             onClick={toggleListening}
           >
             {isListening ? "停止监听" : "开始监听"}
           </button>
+          {!hasRegisteredVoiceprint ? (
+            <div className="text-xs text-amber-300">
+              请先完成一次“下一段用于注册声纹”，再进入下一阶段
+            </div>
+          ) : null}
           <div className="text-sm text-slate-300">
             {isListening ? "麦克风已开启" : "麦克风未开启"}
           </div>
@@ -334,6 +346,15 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
             {isProcessing ? "转写中..." : "空闲"}
           </div>
         </div>
+        {hasRegisteredVoiceprint ? (
+          <div className="rounded-lg border border-emerald-600/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
+            声纹采集状态：已完成，可进入下一阶段
+          </div>
+        ) : (
+          <div className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            声纹采集状态：未完成，需先采集销售声纹
+          </div>
+        )}
         {registerResult ? (
           <div className="rounded-lg border border-emerald-600/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
             {registerResult}
@@ -388,7 +409,7 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
         <ul className="grid gap-2 text-slate-300">
           <li>语音采集：已接入 VAD</li>
           <li>ASR 转写：{asrEngineStatus}</li>
-          <li>声纹判别：Resemblyzer 1v1</li>
+          <li>声纹判别：{hasRegisteredVoiceprint ? "Resemblyzer 1v1（已完成销售声纹采集）" : "Resemblyzer 1v1（待完成销售声纹采集）"}</li>
           <li>PRD 生成：待接入</li>
           <li>POC 渲染：待接入</li>
         </ul>

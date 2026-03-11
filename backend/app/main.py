@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -192,6 +192,7 @@ class SummaryResponse(BaseModel):
     markdown: str
     citations: List["CitationItem"] = []
     rag_used: bool = False
+    retrieval_query: str = ""
 
 
 class SummaryRequest(BaseModel):
@@ -206,6 +207,7 @@ class CitationItem(BaseModel):
     score: float
     page_no: Optional[int]
     snippet: str
+    content: str = ""
 
 
 class PrdSaveRequest(BaseModel):
@@ -665,6 +667,33 @@ def build_transcript(utterances: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def build_mock_utterances() -> List[Dict[str, Any]]:
+    base_time = datetime.now(timezone.utc)
+    dialogue = [
+        ("销售", "您好，我们这边主要想升级门店线索管理系统，当前销售跟进比较分散。"),
+        ("客户", "我们现在最大的痛点是线索分配慢，而且跟进记录不完整。"),
+        ("销售", "明白，您希望先解决分配效率，还是先统一客户画像和沟通记录？"),
+        ("客户", "先做分配和提醒，后面再补客户画像。"),
+        ("销售", "好的，那我们会设计线索自动分配、SLA 超时提醒、以及阶段转化看板。"),
+        ("客户", "可以，再加一个周报导出，方便给管理层复盘。")
+    ]
+    utterances: List[Dict[str, Any]] = []
+    for index, (speaker, text) in enumerate(dialogue):
+        utterances.append(
+            {
+                "id": str(uuid4()),
+                "speaker": speaker,
+                "text": text,
+                "ts": (base_time + timedelta(seconds=index * 12)).isoformat(),
+                "asr_engine": "mock",
+                "asr_fallback": False,
+                "audio_filename": f"mock-{index + 1}.wav",
+                "similarity": None
+            }
+        )
+    return utterances
+
+
 def build_rag_context(citations: List[Dict[str, Any]]) -> str:
     if not citations:
         return ""
@@ -684,7 +713,8 @@ def build_citation_models(citations: List[Dict[str, Any]]) -> List[CitationItem]
             chunk_id=str(item["chunk_id"]),
             score=float(item["score"]),
             page_no=cast(Optional[int], item.get("page_no")),
-            snippet=str(item["content"])[:240]
+            snippet=str(item["content"])[:240],
+            content=str(item["content"])
         )
         for item in citations
     ]
@@ -1184,6 +1214,17 @@ def get_session_utterances(session_id: str) -> SessionUtterancesResponse:
     )
 
 
+@app.post("/session/{session_id}/mock-utterances", response_model=SessionUtterancesResponse)
+def inject_mock_utterances(session_id: str) -> SessionUtterancesResponse:
+    utterances = build_mock_utterances()
+    utterances_by_session[session_id] = utterances
+    save_runtime_state()
+    return SessionUtterancesResponse(
+        session_id=session_id,
+        utterances=[UtteranceItem(**item) for item in utterances]
+    )
+
+
 @app.post("/session/{session_id}/summary", response_model=SummaryResponse)
 # 会话总结生成接口
 def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -> SummaryResponse:
@@ -1223,7 +1264,8 @@ def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -
         prd_id=prd_id,
         markdown=markdown,
         citations=citations,
-        rag_used=len(citations) > 0
+        rag_used=len(citations) > 0,
+        retrieval_query=transcript
     )
 
 

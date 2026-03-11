@@ -8,6 +8,7 @@ type Citation = {
   score: number
   page_no: number | null
   snippet: string
+  content?: string
 }
 
 type StagePrdProps = {
@@ -18,6 +19,17 @@ type StagePrdProps = {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+
+async function readErrorMessage(response: Response) {
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === "string" && data.detail) {
+      return data.detail
+    }
+  } catch {
+  }
+  return `接口返回 ${response.status}`
+}
 
 export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdProps) {
   const [summaryLoading, setSummaryLoading] = useState(false)
@@ -30,6 +42,10 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
   const [editedMarkdown, setEditedMarkdown] = useState<string>("")
   const [saveLoading, setSaveLoading] = useState(false)
   const [saveResult, setSaveResult] = useState<string | null>(null)
+  const [mockLoading, setMockLoading] = useState(false)
+  const [mockResult, setMockResult] = useState<string | null>(null)
+  const [retrievalQuery, setRetrievalQuery] = useState("")
+  const hitChunkCount = citations.length
 
   const ensureSessionId = useCallback(() => {
     if (sessionId) {
@@ -43,12 +59,8 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
     return nextSessionId
   }, [sessionId, setSessionId])
 
-  const generateSummary = useCallback(async () => {
-    setSummaryLoading(true)
-    setSummaryError(null)
-    setSaveResult(null)
-    try {
-      const resolvedSessionId = ensureSessionId()
+  const requestSummary = useCallback(
+    async (resolvedSessionId: string) => {
       const response = await fetch(
         `${API_BASE}/session/${resolvedSessionId}/summary`,
         {
@@ -63,7 +75,7 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
         }
       )
       if (!response.ok) {
-        throw new Error(`接口返回 ${response.status}`)
+        throw new Error(await readErrorMessage(response))
       }
       const data = await response.json()
       setPrdId(data.prd_id)
@@ -71,13 +83,53 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
       setEditedMarkdown(data.markdown)
       setRagUsed(Boolean(data.rag_used))
       setCitations(Array.isArray(data.citations) ? data.citations : [])
+      setRetrievalQuery(typeof data.retrieval_query === "string" ? data.retrieval_query : "")
+    },
+    [ragEnabled, ragTopK, setPrdId]
+  )
+
+  const generateSummary = useCallback(async () => {
+    setSummaryLoading(true)
+    setSummaryError(null)
+    setSaveResult(null)
+    setMockResult(null)
+    try {
+      const resolvedSessionId = ensureSessionId()
+      await requestSummary(resolvedSessionId)
     } catch (err) {
       const message = err instanceof Error ? err.message : "未知错误"
       setSummaryError(message)
     } finally {
       setSummaryLoading(false)
     }
-  }, [ensureSessionId, ragEnabled, ragTopK, setPrdId])
+  }, [ensureSessionId, requestSummary])
+
+  const seedMockAndGenerateSummary = useCallback(async () => {
+    setMockLoading(true)
+    setSummaryError(null)
+    setSaveResult(null)
+    try {
+      const resolvedSessionId = ensureSessionId()
+      const mockResponse = await fetch(
+        `${API_BASE}/session/${resolvedSessionId}/mock-utterances`,
+        { method: "POST" }
+      )
+      if (!mockResponse.ok) {
+        throw new Error(await readErrorMessage(mockResponse))
+      }
+      const mockData = await mockResponse.json()
+      const utteranceCount = Array.isArray(mockData.utterances) ? mockData.utterances.length : 0
+      setMockResult(`已注入 ${utteranceCount} 条 mock 对话（会话 ${resolvedSessionId}）`)
+      setSummaryLoading(true)
+      await requestSummary(resolvedSessionId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "未知错误"
+      setSummaryError(message)
+    } finally {
+      setSummaryLoading(false)
+      setMockLoading(false)
+    }
+  }, [ensureSessionId, requestSummary])
 
   const savePrd = useCallback(async () => {
     if (!prdId) {
@@ -113,9 +165,16 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
         <button
           className="rounded-full bg-indigo-500 px-5 py-2 text-sm font-medium text-white"
           onClick={generateSummary}
-          disabled={summaryLoading}
+          disabled={summaryLoading || mockLoading}
         >
           {summaryLoading ? "生成中..." : "生成总结"}
+        </button>
+        <button
+          className="rounded-full bg-violet-600 px-5 py-2 text-sm font-medium text-white"
+          onClick={seedMockAndGenerateSummary}
+          disabled={mockLoading || summaryLoading}
+        >
+          {mockLoading ? "注入中..." : "注入 Mock 并生成总结"}
         </button>
         <button
           className="rounded-full bg-slate-700 px-5 py-2 text-sm font-medium text-white"
@@ -155,6 +214,11 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
           {saveResult}
         </div>
       ) : null}
+      {mockResult ? (
+        <div className="rounded-lg border border-violet-600/40 bg-violet-500/10 p-3 text-sm text-violet-200">
+          {mockResult}
+        </div>
+      ) : null}
       <div className="grid gap-3">
         <div className="text-sm text-slate-400">生成结果</div>
         <textarea
@@ -170,18 +234,39 @@ export function StagePrd({ sessionId, setSessionId, prdId, setPrdId }: StagePrdP
         ) : null}
         {prdMarkdown ? (
           <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
-            {ragUsed ? "本次总结已使用 RAG 检索结果" : "本次总结未命中可用检索结果"}
+            {ragUsed ? `本次总结已使用 RAG 检索结果，命中 ${hitChunkCount} 个 chunk` : "本次总结未命中可用检索结果"}
           </div>
         ) : null}
-        {citations.length > 0 ? (
+        {prdMarkdown && ragEnabled ? (
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300">
+            <div className="text-slate-400">RAG 检索 Query（由当前会话逐字稿拼接）</div>
+            <div className="mt-1 whitespace-pre-wrap break-all">
+              {retrievalQuery || "当前暂无可展示的检索 Query"}
+            </div>
+          </div>
+        ) : null}
+        {prdMarkdown && ragUsed ? (
           <div className="grid gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3">
-            <div className="text-xs text-slate-400">引用来源</div>
-            {citations.map((item) => (
+            <div className="text-xs text-slate-400">
+              命中 Chunk 列表（共 {hitChunkCount} 个）
+            </div>
+            {citations.map((item, index) => (
               <div key={item.chunk_id} className="rounded border border-slate-800 p-2 text-xs text-slate-300">
                 <div>
-                  doc={item.document_id} chunk={item.chunk_id} page={item.page_no ?? "-"} score={Number(item.score).toFixed(4)}
+                  #{index + 1} doc={item.document_id}
                 </div>
-                <div className="mt-1 text-slate-400">{item.snippet}</div>
+                <div>
+                  chunk={item.chunk_id}
+                </div>
+                <div>
+                  page={item.page_no ?? "-"}
+                </div>
+                <div>
+                  score={Number(item.score).toFixed(4)}
+                </div>
+                <div className="mt-1 whitespace-pre-wrap text-slate-400">
+                  命中内容为：{item.content || item.snippet || "无内容"}
+                </div>
               </div>
             ))}
           </div>
