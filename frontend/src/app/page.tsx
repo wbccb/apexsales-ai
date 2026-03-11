@@ -119,6 +119,8 @@ export default function Home() {
   const [contractResult, setContractResult] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState("")
   const [asrEngineStatus, setAsrEngineStatus] = useState("未转写")
+  const registerNextRef = useRef(false)
+  const verifyNextRef = useRef(false)
 
   const ensureSessionId = useCallback(() => {
     if (sessionId) {
@@ -137,6 +139,14 @@ export default function Home() {
       ensureSessionId()
     }
   }, [ensureSessionId, sessionId])
+
+  useEffect(() => {
+    registerNextRef.current = registerNext
+  }, [registerNext])
+
+  useEffect(() => {
+    verifyNextRef.current = verifyNext
+  }, [verifyNext])
 
   const sendAudio = useCallback(
     async (audio: Float32Array, mode: "register" | "verify" | "transcribe") => {
@@ -232,12 +242,12 @@ export default function Home() {
       onSpeechStart: () => setIsSpeaking(true),
       onSpeechEnd: (audio: Float32Array) => {
         setIsSpeaking(false)
-        if (registerNext) {
+        if (registerNextRef.current) {
           setRegisterNext(false)
           void sendAudio(audio, "register")
           return
         }
-        if (verifyNext) {
+        if (verifyNextRef.current) {
           setVerifyNext(false)
           void sendAudio(audio, "verify")
           return
@@ -255,6 +265,15 @@ export default function Home() {
       vadRef.current?.pause()
       setIsListening(false)
       setIsSpeaking(false)
+      return
+    }
+    const vad = await setupVad()
+    await vad.start()
+    setIsListening(true)
+  }, [isListening, setupVad])
+
+  const ensureListening = useCallback(async () => {
+    if (isListening) {
       return
     }
     const vad = await setupVad()
@@ -414,6 +433,67 @@ export default function Home() {
       </header>
       <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
         <h2 className="text-xl font-medium">语音采集与对话</h2>
+        <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
+          <div className="text-sm font-medium text-slate-200">
+            声纹操作指引
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            先填写销售 ID，再点击“下一段用于注册声纹”或“下一段用于验证声纹”，然后说一句话即可触发对应动作。若麦克风未开启，会自动开启监听。
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+            <label className="grid gap-1 text-sm text-slate-300">
+              <span>销售 ID（声纹归属标识）</span>
+              <input
+                value={salesId}
+                onChange={(event) => setSalesId(event.target.value)}
+                placeholder="例如：sales_zhangsan"
+                className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className={`rounded-full px-4 py-2 text-xs font-medium transition ${
+                  registerNext
+                    ? "bg-amber-400 text-slate-950"
+                    : "bg-slate-700 text-white"
+                }`}
+                onClick={async () => {
+                  setRegisterResult(null)
+                  setVerifyResult(null)
+                  setVerifyNext(false)
+                  setRegisterNext(true)
+                  await ensureListening()
+                }}
+              >
+                下一段用于注册声纹
+              </button>
+              <button
+                className={`rounded-full px-4 py-2 text-xs font-medium transition ${
+                  verifyNext
+                    ? "bg-sky-400 text-slate-950"
+                    : "bg-slate-700 text-white"
+                }`}
+                onClick={async () => {
+                  setRegisterResult(null)
+                  setVerifyResult(null)
+                  setRegisterNext(false)
+                  setVerifyNext(true)
+                  await ensureListening()
+                }}
+              >
+                下一段用于验证声纹
+              </button>
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-slate-400">
+            当前待执行动作：
+            {registerNext
+              ? " 下一段语音将用于注册声纹"
+              : verifyNext
+                ? " 下一段语音将用于验证声纹"
+                : " 未指定（默认进行普通转写）"}
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-3">
           <button
             className={`rounded-full px-5 py-2 text-sm font-medium transition ${
@@ -424,40 +504,6 @@ export default function Home() {
             onClick={toggleListening}
           >
             {isListening ? "停止监听" : "开始监听"}
-          </button>
-          <input
-            value={salesId}
-            onChange={(event) => setSalesId(event.target.value)}
-            placeholder="销售 ID（用于声纹）"
-            className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100"
-          />
-          <button
-            className={`rounded-full px-4 py-2 text-xs font-medium transition ${
-              registerNext
-                ? "bg-amber-400 text-slate-950"
-                : "bg-slate-700 text-white"
-            }`}
-            onClick={() => {
-              setRegisterResult(null)
-              setVerifyResult(null)
-              setRegisterNext(true)
-            }}
-          >
-            下一段注册声纹
-          </button>
-          <button
-            className={`rounded-full px-4 py-2 text-xs font-medium transition ${
-              verifyNext
-                ? "bg-sky-400 text-slate-950"
-                : "bg-slate-700 text-white"
-            }`}
-            onClick={() => {
-              setRegisterResult(null)
-              setVerifyResult(null)
-              setVerifyNext(true)
-            }}
-          >
-            验证声纹
           </button>
           <div className="text-sm text-slate-300">
             {isListening ? "麦克风已开启" : "麦克风未开启"}
