@@ -11,17 +11,36 @@ import requests
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from funasr import AutoModel
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
 from pydantic import BaseModel
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from resemblyzer import VoiceEncoder, preprocess_wav
 from pypdf import PdfReader
 
+try:
+    from funasr import AutoModel
+    from funasr.utils.postprocess_utils import rich_transcription_postprocess
+except Exception:
+    AutoModel = None
+
+    def rich_transcription_postprocess(text: str) -> str:
+        return text
+
+try:
+    from faster_whisper import WhisperModel
+except Exception:
+    WhisperModel = None
+
 from .config import (
+    get_asr_fallback_text,
     get_asr_device,
+    get_asr_faster_whisper_beam_size,
+    get_asr_faster_whisper_compute_type,
+    get_asr_faster_whisper_device,
+    get_asr_faster_whisper_model,
+    get_asr_language,
     get_asr_model_name,
+    get_asr_provider,
     get_llm_api_key,
     get_llm_api_url,
     get_llm_model,
@@ -67,6 +86,7 @@ knowledge_chunks_by_doc = cast(Dict[str, List[Dict[str, Any]]], {})
 prd_citations_by_prd = cast(Dict[str, List[Dict[str, Any]]], {})
 # 模型懒加载容器
 asr_model = None
+faster_whisper_model = None
 voice_encoder = None
 
 DEFAULT_POC_RULE_TEMPLATE = (
@@ -137,6 +157,8 @@ class UtteranceResponse(BaseModel):
     speaker: str
     text: str
     ts: str
+    asr_engine: str
+    asr_fallback: bool
 
 
 class VoiceRegisterResponse(BaseModel):
@@ -156,6 +178,8 @@ class UtteranceItem(BaseModel):
     speaker: str
     text: str
     ts: str
+    asr_engine: Optional[str] = None
+    asr_fallback: Optional[bool] = None
 
 
 class SessionUtterancesResponse(BaseModel):
@@ -266,6 +290,8 @@ def health() -> dict:
 def get_asr_model():
     # ASR 模型懒加载，避免启动时加载过慢
     global asr_model
+    if AutoModel is None:
+        raise HTTPException(status_code=503, detail="未安装 funasr，无法使用语音转写功能")
     if asr_model is None:
         model_name = get_asr_model_name()
         device = get_asr_device()
@@ -275,6 +301,19 @@ def get_asr_model():
             trust_remote_code=True
         )
     return asr_model
+
+
+def get_faster_whisper_model():
+    global faster_whisper_model
+    if WhisperModel is None:
+        raise HTTPException(status_code=503, detail="未安装 faster-whisper，无法使用 Whisper 转写")
+    if faster_whisper_model is None:
+        faster_whisper_model = WhisperModel(
+            model_size_or_path=get_asr_faster_whisper_model(),
+            device=get_asr_faster_whisper_device(),
+            compute_type=get_asr_faster_whisper_compute_type()
+        )
+    return faster_whisper_model
 
 
 def get_voice_encoder():
@@ -308,8 +347,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
-def asr_transcribe(file_path: str) -> str:
-    # 调用 ASR 模型转写
+def asr_transcribe_by_funasr(file_path: str) -> Dict[str, Any]:
     model = get_asr_model()
     res = model.generate(
         input=file_path,
@@ -320,9 +358,57 @@ def asr_transcribe(file_path: str) -> str:
         merge_vad=True
     )
     if not res:
-        return ""
+        return {"text": "", "asr_engine": "funasr", "asr_fallback": False}
     text = res[0].get("text", "")
-    return rich_transcription_postprocess(text)
+    return {
+        "text": rich_transcription_postprocess(text),
+        "asr_engine": "funasr",
+        "asr_fallback": False
+    }
+
+
+def asr_transcribe_by_faster_whisper(file_path: str) -> Dict[str, Any]:
+    model = get_faster_whisper_model()
+    language = get_asr_language().strip()
+    kwargs: Dict[str, Any] = {"beam_size": get_asr_faster_whisper_beam_size()}
+    if language:
+        kwargs["language"] = language
+    segments, _ = model.transcribe(file_path, **kwargs)
+    text = "".join(segment.text for segment in segments).strip()
+    return {"text": text, "asr_engine": "whisper", "asr_fallback": False}
+
+
+def asr_transcribe(file_path: str) -> Dict[str, Any]:
+    provider = get_asr_provider()
+    fallback_text = get_asr_fallback_text().strip()
+    if provider == "funasr":
+        try:
+            return asr_transcribe_by_funasr(file_path)
+        except Exception as exc:
+            if fallback_text:
+                return {"text": fallback_text, "asr_engine": "fallback", "asr_fallback": True}
+            raise HTTPException(status_code=503, detail=f"ASR 调用失败：{str(exc)}") from exc
+    if provider == "faster_whisper":
+        try:
+            return asr_transcribe_by_faster_whisper(file_path)
+        except Exception as exc:
+            if fallback_text:
+                return {"text": fallback_text, "asr_engine": "fallback", "asr_fallback": True}
+            raise HTTPException(status_code=503, detail=f"ASR 调用失败：{str(exc)}") from exc
+    funasr_error: Optional[Exception] = None
+    try:
+        return asr_transcribe_by_funasr(file_path)
+    except Exception as exc:
+        funasr_error = exc
+    try:
+        return asr_transcribe_by_faster_whisper(file_path)
+    except Exception as whisper_exc:
+        if fallback_text:
+            return {"text": fallback_text, "asr_engine": "fallback", "asr_fallback": True}
+        raise HTTPException(
+            status_code=503,
+            detail=f"ASR 调用失败：funasr={str(funasr_error)}; faster_whisper={str(whisper_exc)}"
+        ) from whisper_exc
 
 
 def get_knowledge_storage_dir() -> str:
@@ -1041,7 +1127,10 @@ async def transcribe(
 ) -> UtteranceResponse:
     temp_path = await save_upload_to_temp(audio)
     try:
-        text = asr_transcribe(temp_path)
+        asr_result = asr_transcribe(temp_path)
+        text = str(asr_result.get("text", ""))
+        asr_engine = str(asr_result.get("asr_engine", "fallback"))
+        asr_fallback = bool(asr_result.get("asr_fallback", False))
         speaker = "客户"
         similarity = None
         if sales_id:
@@ -1052,6 +1141,10 @@ async def transcribe(
             similarity = cosine_similarity(current_embedding, sales_embedding)
             threshold = get_speaker_similarity_threshold()
             speaker = "销售" if similarity >= threshold else "客户"
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"语音处理失败：{str(exc)}") from exc
     finally:
         try:
             os.remove(temp_path)
@@ -1064,6 +1157,8 @@ async def transcribe(
         "speaker": speaker,
         "text": text,
         "ts": ts,
+        "asr_engine": asr_engine,
+        "asr_fallback": asr_fallback,
         "audio_filename": audio.filename,
         "similarity": similarity
     }
@@ -1073,7 +1168,9 @@ async def transcribe(
         utterance_id=utterance_id,
         speaker=speaker,
         text=text,
-        ts=ts
+        ts=ts,
+        asr_engine=asr_engine,
+        asr_fallback=asr_fallback
     )
 
 

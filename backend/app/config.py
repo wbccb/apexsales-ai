@@ -5,8 +5,40 @@ def get_asr_model_name() -> str:
     return os.getenv("ASR_MODEL", "iic/SenseVoiceSmall")
 
 
+def get_asr_provider() -> str:
+    return os.getenv("ASR_PROVIDER", "auto").lower()
+
+
 def get_asr_device() -> str:
     return os.getenv("ASR_DEVICE", "cpu")
+
+
+def get_asr_language() -> str:
+    return os.getenv("ASR_LANGUAGE", "zh")
+
+
+def get_asr_fallback_text() -> str:
+    return os.getenv("ASR_FALLBACK_TEXT", "【ASR 暂不可用，已返回降级转写】")
+
+
+def get_asr_faster_whisper_model() -> str:
+    return os.getenv("ASR_FASTER_WHISPER_MODEL", "small")
+
+
+def get_asr_faster_whisper_device() -> str:
+    return os.getenv("ASR_FASTER_WHISPER_DEVICE", "cpu")
+
+
+def get_asr_faster_whisper_compute_type() -> str:
+    return os.getenv("ASR_FASTER_WHISPER_COMPUTE_TYPE", "int8")
+
+
+def get_asr_faster_whisper_beam_size() -> int:
+    value = os.getenv("ASR_FASTER_WHISPER_BEAM_SIZE", "3")
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 3
 
 
 def get_speaker_similarity_threshold() -> float:

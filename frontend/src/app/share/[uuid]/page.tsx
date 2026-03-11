@@ -4,6 +4,9 @@ import { SandpackCodeEditor, SandpackLayout, SandpackPreview, SandpackProvider }
 import { useEffect, useState } from "react"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+const SANDBOX_BUNDLER_URL =
+  process.env.NEXT_PUBLIC_SANDPACK_BUNDLER_URL ??
+  "https://sandpack-bundler.codesandbox.io"
 
 export default function SharePage({ params }: { params: { uuid: string } }) {
   const [loading, setLoading] = useState(true)
@@ -54,7 +57,10 @@ export default function SharePage({ params }: { params: { uuid: string } }) {
           files={{
             "/App.tsx": code || "export default function App(){return <div />}"
           }}
-          options={{ visibleFiles: ["/App.tsx"] }}
+          options={{
+            visibleFiles: ["/App.tsx"],
+            bundlerURL: SANDBOX_BUNDLER_URL
+          }}
         >
           <SandpackLayout>
             <SandpackCodeEditor style={{ height: 600 }} />

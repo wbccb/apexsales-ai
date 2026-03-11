@@ -2,13 +2,15 @@
 
 import { SandpackCodeEditor, SandpackLayout, SandpackPreview, SandpackProvider } from "@codesandbox/sandpack-react"
 import { MicVAD } from "@ricky0123/vad-web"
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 type Utterance = {
   id: string
   speaker: string
   text: string
   ts: string
+  asr_engine: string
+  asr_fallback: boolean
 }
 
 type Citation = {
@@ -22,6 +24,9 @@ type Citation = {
 // 后端 API 根地址
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
+const SANDBOX_BUNDLER_URL =
+  process.env.NEXT_PUBLIC_SANDPACK_BUNDLER_URL ??
+  "https://sandpack-bundler.codesandbox.io"
 const ASSET_BASE =
   "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/"
 const ONNX_BASE =
@@ -71,6 +76,17 @@ function encodeWav(samples: Float32Array, sampleRate: number) {
   return buffer
 }
 
+async function readErrorMessage(response: Response) {
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === "string" && data.detail) {
+      return data.detail
+    }
+  } catch {
+  }
+  return `接口返回 ${response.status}`
+}
+
 export default function Home() {
   const vadRef = useRef<MicVAD | null>(null)
   const [isListening, setIsListening] = useState(false)
@@ -101,12 +117,26 @@ export default function Home() {
   const [shareInput, setShareInput] = useState<string>("")
   const [contractLoading, setContractLoading] = useState(false)
   const [contractResult, setContractResult] = useState<string | null>(null)
-  const sessionId = useMemo(() => {
-    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-      return crypto.randomUUID()
+  const [sessionId, setSessionId] = useState("")
+  const [asrEngineStatus, setAsrEngineStatus] = useState("未转写")
+
+  const ensureSessionId = useCallback(() => {
+    if (sessionId) {
+      return sessionId
     }
-    return `${Date.now()}`
-  }, [])
+    const nextSessionId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}`
+    setSessionId(nextSessionId)
+    return nextSessionId
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!sessionId) {
+      ensureSessionId()
+    }
+  }, [ensureSessionId, sessionId])
 
   const sendAudio = useCallback(
     async (audio: Float32Array, mode: "register" | "verify" | "transcribe") => {
@@ -128,7 +158,7 @@ export default function Home() {
             body: formData
           })
           if (!response.ok) {
-            throw new Error(`接口返回 ${response.status}`)
+            throw new Error(await readErrorMessage(response))
           }
           const data = await response.json()
           setRegisterResult(`已注册销售声纹：${data.user_id}`)
@@ -145,7 +175,7 @@ export default function Home() {
             body: formData
           })
           if (!response.ok) {
-            throw new Error(`接口返回 ${response.status}`)
+            throw new Error(await readErrorMessage(response))
           }
           const data = await response.json()
           setVerifyResult(
@@ -155,7 +185,8 @@ export default function Home() {
           )
           return
         }
-        formData.append("session_id", sessionId)
+        const resolvedSessionId = ensureSessionId()
+        formData.append("session_id", resolvedSessionId)
         if (salesId.trim()) {
           formData.append("sales_id", salesId.trim())
         }
@@ -164,16 +195,21 @@ export default function Home() {
           body: formData
         })
         if (!response.ok) {
-          throw new Error(`接口返回 ${response.status}`)
+          throw new Error(await readErrorMessage(response))
         }
         const data = await response.json()
+        const engine = typeof data.asr_engine === "string" && data.asr_engine ? data.asr_engine : "fallback"
+        const fallback = Boolean(data.asr_fallback)
+        setAsrEngineStatus(fallback ? `${engine} (fallback)` : engine)
         setUtterances((prev: Utterance[]) => [
           ...prev,
           {
             id: data.utterance_id,
             speaker: data.speaker,
             text: data.text,
-            ts: data.ts
+            ts: data.ts,
+            asr_engine: engine,
+            asr_fallback: fallback
           }
         ])
       } catch (err) {
@@ -183,7 +219,7 @@ export default function Home() {
         setIsProcessing(false)
       }
     },
-    [salesId, sessionId]
+    [ensureSessionId, salesId]
   )
 
   const setupVad = useCallback(async () => {
@@ -232,8 +268,9 @@ export default function Home() {
     setSummaryError(null)
     setSaveResult(null)
     try {
+      const resolvedSessionId = ensureSessionId()
       const response = await fetch(
-        `${API_BASE}/session/${sessionId}/summary`,
+        `${API_BASE}/session/${resolvedSessionId}/summary`,
         {
           method: "POST",
           headers: {
@@ -260,7 +297,7 @@ export default function Home() {
     } finally {
       setSummaryLoading(false)
     }
-  }, [ragEnabled, ragTopK, sessionId])
+  }, [ensureSessionId, ragEnabled, ragTopK])
 
   // 保存 PRD 编辑结果
   const savePrd = useCallback(async () => {
@@ -448,7 +485,12 @@ export default function Home() {
           </div>
         ) : null}
         <div className="grid gap-3">
-          <div className="text-sm text-slate-400">当前会话：{sessionId}</div>
+          <div className="text-sm text-slate-400">
+            当前会话：{sessionId || "待生成"}
+          </div>
+          <div className="text-sm text-slate-400">
+            ASR 当前引擎：{asrEngineStatus}
+          </div>
           <div className="grid gap-3">
             {utterances.length === 0 ? (
               <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-400">
@@ -464,6 +506,9 @@ export default function Home() {
                     <span>{item.speaker}</span>
                     <span>{new Date(item.ts).toLocaleTimeString()}</span>
                   </div>
+                  <div className="mt-1 text-xs text-slate-400">
+                    引擎：{item.asr_fallback ? `${item.asr_engine} (fallback)` : item.asr_engine}
+                  </div>
                   <div className="mt-2 text-sm text-slate-100">
                     {item.text}
                   </div>
@@ -477,7 +522,7 @@ export default function Home() {
         <h2 className="text-xl font-medium">阶段一状态</h2>
         <ul className="grid gap-2 text-slate-300">
           <li>语音采集：已接入 VAD</li>
-          <li>ASR 转写：SenseVoice</li>
+          <li>ASR 转写：{asrEngineStatus}</li>
           <li>声纹判别：Resemblyzer 1v1</li>
           <li>PRD 生成：待接入</li>
           <li>POC 渲染：待接入</li>
@@ -612,7 +657,10 @@ export default function Home() {
           files={{
             "/App.tsx": pocCode || "export default function App(){return <div />}"
           }}
-          options={{ visibleFiles: ["/App.tsx"] }}
+          options={{
+            visibleFiles: ["/App.tsx"],
+            bundlerURL: SANDBOX_BUNDLER_URL
+          }}
         >
           <SandpackLayout>
             <SandpackCodeEditor style={{ height: 360 }} />
