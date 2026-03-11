@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev:prepare": "sh -c 'for pid in $(lsof -tiTCP:3000 -sTCP:LISTEN 2>/dev/null); do kill \"$pid\"; done; rm -rf .next/cache'",
+    "dev": "npm run dev:prepare && next dev",
     "build": "next build",
     "start": "next start"
   },
