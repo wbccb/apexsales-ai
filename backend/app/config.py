@@ -135,6 +135,16 @@ def get_llm_timeout_seconds() -> int:
         return 60
 
 
+def get_stage_timeout_seconds(stage: str) -> int:
+    value = get_stage_env_value(stage, "TIMEOUT_SECONDS")
+    if value:
+        try:
+            return max(1, int(value))
+        except ValueError:
+            return get_llm_timeout_seconds()
+    return get_llm_timeout_seconds()
+
+
 def get_prd_prompt_template() -> str:
     return (
         "你是资深售前产品经理。\n"

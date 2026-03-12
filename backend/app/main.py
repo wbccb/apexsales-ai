@@ -45,8 +45,8 @@ from .config import (
     get_stage_api_key,
     get_stage_base_url,
     get_stage_model_name,
+    get_stage_timeout_seconds,
     get_llm_temperature,
-    get_llm_timeout_seconds,
     get_poc_mode,
     get_poc_prompt_template,
     get_poc_rule_template_path,
@@ -852,6 +852,24 @@ def truncate_log_text(text: Optional[str], max_len: int = 800) -> str:
     return text[:max_len] + "..."
 
 
+def redact_headers(headers: Dict[str, str]) -> Dict[str, str]:
+    safe_headers: Dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() == "authorization":
+            safe_headers[key] = "***"
+        else:
+            safe_headers[key] = value
+    return safe_headers
+
+
+def strip_think_blocks(text: str) -> str:
+    if not text:
+        return text
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = cleaned.replace("<think>", "").replace("</think>", "")
+    return cleaned.strip()
+
+
 def normalize_llm_url(base_url: str) -> str:
     # 统一 LLM 请求地址，兼容传入 /v1 或 /v1/ 的情况
     clean_url = base_url.strip()
@@ -900,18 +918,30 @@ def generate_prd_markdown_llm(transcript: str, rag_context: str) -> str:
     # 如有 API Key 则写入 Authorization
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    logger.info(
+        "llm_prd_request url=%s headers=%s payload=%s",
+        api_url,
+        redact_headers(headers),
+        payload
+    )
     try:
         # 发起 LLM 请求
         response = requests.post(
             api_url,
             json=payload,
             headers=headers,
-            timeout=get_llm_timeout_seconds()
+            timeout=get_stage_timeout_seconds("prd")
         )
     except requests.RequestException as exc:
         # 网络异常或超时直接抛出
         logger.exception("llm_prd_request_failed error=%s", str(exc))
         raise HTTPException(status_code=500, detail="LLM 请求失败") from exc
+    logger.info(
+        "llm_prd_response status=%s headers=%s body=%s",
+        response.status_code,
+        dict(response.headers),
+        response.text
+    )
     # LLM 返回异常状态码
     if response.status_code >= 400:
         # 读取响应文本并裁剪，便于排查
@@ -1002,14 +1032,13 @@ def generate_poc_code_rule(prd_markdown: str) -> str:
 
 
 def generate_poc_code_llm(prd_markdown: str) -> str:
-    # LLM 版 POC 代码生成，通过统一 API 调用
     config = build_model_config("poc")
     api_url = config["base_url"]
-    # 规范化 LLM API 地址
     api_url = normalize_llm_url(api_url)
     model = config["model_name"]
     if not api_url or not model:
         raise HTTPException(status_code=500, detail="LLM 未配置")
+    prd_markdown = strip_think_blocks(prd_markdown)
     prompt = get_poc_prompt_template().replace("{{prd}}", prd_markdown)
     payload = {
         "model": model,
@@ -1020,31 +1049,65 @@ def generate_poc_code_llm(prd_markdown: str) -> str:
     api_key = config["api_key"]
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    try:
-        response = requests.post(
-            api_url,
-            json=payload,
-            headers=headers,
-            timeout=get_llm_timeout_seconds()
-        )
-    except requests.RequestException:
-        raise HTTPException(status_code=500, detail="LLM 请求失败")
+    logger.info(
+        "llm_poc_request url=%s headers=%s payload=%s",
+        api_url,
+        redact_headers(headers),
+        payload
+    )
+    response = requests.post(
+        api_url,
+        json=payload,
+        headers=headers,
+        timeout=get_stage_timeout_seconds("poc")
+    )
+    logger.info(
+        "llm_poc_response status=%s headers=%s body=%s",
+        response.status_code,
+        dict(response.headers),
+        response.text
+    )
     if response.status_code >= 400:
         raise HTTPException(status_code=500, detail="LLM 返回异常")
     data = response.json()
-    choices = data.get("choices", [])
-    if not choices:
-        raise HTTPException(status_code=500, detail="LLM 返回空内容")
-    content = choices[0].get("message", {}).get("content")
+    content: Optional[str] = None
+    if isinstance(data, dict):
+        choices = data.get("choices", [])
+        if isinstance(choices, list) and choices:
+            first_choice = choices[0]
+            if isinstance(first_choice, dict):
+                message = first_choice.get("message")
+                if isinstance(message, dict):
+                    message_content = message.get("content")
+                    if isinstance(message_content, list):
+                        content = "".join(
+                            [
+                                str(item.get("text", ""))
+                                for item in message_content
+                                if isinstance(item, dict)
+                            ]
+                        )
+                    else:
+                        content = message_content
+                if not content:
+                    content = first_choice.get("text") or first_choice.get("content")
+        if not content:
+            content = (
+                data.get("result")
+                or data.get("output")
+                or data.get("content")
+                or data.get("response")
+            )
     if not content:
         raise HTTPException(status_code=500, detail="LLM 返回空内容")
-    
-    # 清理 markdown 代码块标记
+    if not isinstance(content, str):
+        content = str(content)
+    content = strip_think_blocks(content)
     content = content.strip()
     if content.startswith("```"):
         first_newline = content.find("\n")
         if first_newline != -1:
-            content = content[first_newline+1:]
+            content = content[first_newline + 1:]
         if content.endswith("```"):
             content = content[:-3]
     return content.strip()
@@ -1052,6 +1115,7 @@ def generate_poc_code_llm(prd_markdown: str) -> str:
 
 def generate_poc_code(prd_markdown: str) -> str:
     # 根据模式选择规则版或 LLM 版 POC
+    prd_markdown = strip_think_blocks(prd_markdown)
     mode = get_poc_mode()
     if mode == "llm":
         return generate_poc_code_llm(prd_markdown)
@@ -1088,15 +1152,27 @@ def generate_contract_llm(prd_markdown: str, rag_context: str) -> str:
     api_key = config.get("api_key")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    logger.info(
+        "llm_contract_request url=%s headers=%s payload=%s",
+        api_url,
+        redact_headers(headers),
+        payload
+    )
     try:
         response = requests.post(
             api_url,
             json=payload,
             headers=headers,
-            timeout=get_llm_timeout_seconds()
+            timeout=get_stage_timeout_seconds("contract")
         )
     except requests.RequestException:
         raise HTTPException(status_code=500, detail="LLM 请求失败")
+    logger.info(
+        "llm_contract_response status=%s headers=%s body=%s",
+        response.status_code,
+        dict(response.headers),
+        response.text
+    )
     if response.status_code >= 400:
         raise HTTPException(status_code=500, detail="LLM 返回异常")
     data = response.json()
