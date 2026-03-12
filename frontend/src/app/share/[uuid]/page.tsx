@@ -1,12 +1,8 @@
 "use client"
 
-import { SandpackCodeEditor, SandpackLayout, SandpackPreview, SandpackProvider } from "@codesandbox/sandpack-react"
 import { useEffect, useState } from "react"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000"
-const SANDBOX_BUNDLER_URL =
-  process.env.NEXT_PUBLIC_SANDPACK_BUNDLER_URL ??
-  "https://sandpack-bundler.codesandbox.io"
 
 export default function SharePage({ params }: { params: { uuid: string } }) {
   const [loading, setLoading] = useState(true)
@@ -47,26 +43,25 @@ export default function SharePage({ params }: { params: { uuid: string } }) {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-4 p-6">
-      <h1 className="text-2xl font-semibold text-slate-100">POC 分享页</h1>
-      <div className="text-sm text-slate-400">UUID: {params.uuid}</div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-100">POC 分享页</h1>
+          <div className="text-sm text-slate-400">UUID: {params.uuid}</div>
+        </div>
+      </div>
+      
       {loading ? <div className="text-slate-300">加载中...</div> : null}
       {error ? <div className="text-rose-300">{error}</div> : null}
+      
       {!loading && !error ? (
-        <SandpackProvider
-          template="react-ts"
-          files={{
-            "/App.tsx": code || "export default function App(){return <div />}"
-          }}
-          options={{
-            visibleFiles: ["/App.tsx"],
-            bundlerURL: SANDBOX_BUNDLER_URL
-          }}
-        >
-          <SandpackLayout>
-            <SandpackCodeEditor style={{ height: 600 }} />
-            <SandpackPreview style={{ height: 600 }} />
-          </SandpackLayout>
-        </SandpackProvider>
+        <div className="flex flex-col overflow-hidden rounded-lg border border-slate-800 bg-white h-[800px]">
+          <iframe
+            srcDoc={code}
+            className="flex-1 border-0 w-full"
+            title="POC Preview"
+            sandbox="allow-scripts allow-modals"
+          />
+        </div>
       ) : null}
     </main>
   )

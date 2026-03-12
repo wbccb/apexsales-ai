@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POC App Prototype</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 min-h-screen flex justify-center">
+    <div id="app" class="w-full max-w-md bg-white min-h-screen shadow-lg flex flex-col">
+        <!-- Header -->
+        <header class="bg-blue-600 text-white p-4 sticky top-0 z-10 flex justify-between items-center shadow-md">
+            <div class="font-bold text-lg">产品原型 (Rule模式)</div>
+            <button @click="showToast('刷新数据...')"
+                class="text-sm bg-blue-700 px-3 py-1 rounded hover:bg-blue-800 transition">刷新</button>
+        </header>
+
+        <!-- Content -->
+        <main class="flex-1 p-4 overflow-y-auto">
+            <div v-if="activeTab === 'home'" class="space-y-4">
+                <div class="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                    <h2 class="font-bold text-blue-800 text-lg mb-2">欢迎体验</h2>
+                    <p class="text-sm text-blue-600">这是一个基于规则生成的通用原型框架。由于未启用 LLM，无法针对具体 PRD 生成定制界面。</p>
+                </div>
+
+                <h3 class="font-bold text-gray-800 mt-6 mb-2 text-lg">核心功能预览</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div v-for="(feature, index) in features" :key="index"
+                        class="bg-white border border-gray-200 p-4 rounded-xl shadow-sm hover:shadow-md transition cursor-pointer active:scale-95 transform"
+                        @click="showFeature(feature)">
+                        <div
+                            class="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 mb-3 text-xl">
+                            {{ feature.icon }}
+                        </div>
+                        <div class="font-semibold text-gray-800">{{ feature.title }}</div>
+                        <div class="text-xs text-gray-500 mt-1">{{ feature.desc }}</div>
+                    </div>
+                </div>
+
+                <h3 class="font-bold text-gray-800 mt-6 mb-2 text-lg">原始需求引用</h3>
+                <div
+                    class="bg-gray-50 p-3 rounded-lg border border-gray-200 text-xs text-gray-600 font-mono h-32 overflow-y-auto">
+                    {{ prdRaw }}
+                </div>
+            </div>
+
+            <div v-if="activeTab === 'profile'" class="p-4 flex flex-col items-center">
+                <div class="w-20 h-20 bg-gray-200 rounded-full mb-4"></div>
+                <div class="font-bold text-xl text-gray-800">模拟用户</div>
+                <div class="text-gray-500 text-sm">user@example.com</div>
+
+                <div class="w-full mt-8 space-y-2">
+                    <button
+                        class="w-full py-3 bg-white border border-gray-200 rounded-lg text-left px-4 font-medium text-gray-700">账户设置</button>
+                    <button
+                        class="w-full py-3 bg-white border border-gray-200 rounded-lg text-left px-4 font-medium text-gray-700">帮助中心</button>
+                    <button
+                        class="w-full py-3 bg-red-50 border border-red-100 rounded-lg text-left px-4 font-medium text-red-600 mt-4">退出登录</button>
+                </div>
+            </div>
+        </main>
+
+        <!-- Tab Bar -->
+        <nav class="bg-white border-t border-gray-200 flex justify-around py-2 pb-6">
+            <button @click="activeTab = 'home'"
+                :class="['flex flex-col items-center p-2', activeTab === 'home' ? 'text-blue-600' : 'text-gray-400']">
+                <span class="text-xl">🏠</span>
+                <span class="text-xs mt-1">首页</span>
+            </button>
+            <button @click="activeTab = 'list'"
+                :class="['flex flex-col items-center p-2', activeTab === 'list' ? 'text-blue-600' : 'text-gray-400']">
+                <span class="text-xl">📋</span>
+                <span class="text-xs mt-1">列表</span>
+            </button>
+            <button @click="activeTab = 'profile'"
+                :class="['flex flex-col items-center p-2', activeTab === 'profile' ? 'text-blue-600' : 'text-gray-400']">
+                <span class="text-xl">👤</span>
+                <span class="text-xs mt-1">我的</span>
+            </button>
+        </nav>
+
+        <!-- Toast -->
+        <div v-if="toastMsg"
+            class="fixed bottom-20 left-1/2 transform -translate-x-1/2 bg-black/80 text-white px-4 py-2 rounded-full text-sm shadow-lg z-50 transition-opacity duration-300">
+            {{ toastMsg }}
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref } = Vue
+
+        createApp({
+            setup() {
+                const activeTab = ref('home')
+                const toastMsg = ref('')
+                const prdRaw = `{{prd}}` // Backend will replace this
+
+                // Simple extraction of potential features from PRD text (very naive rule-based)
+                const extractFeatures = (text) => {
+                    const defaultFeatures = [
+                        { title: '功能一', desc: '点击查看详情', icon: '⚡️' },
+                        { title: '功能二', desc: '模拟业务操作', icon: '🔍' },
+                        { title: '功能三', desc: '数据可视化', icon: '📊' },
+                        { title: '功能四', desc: '更多设置', icon: '⚙️' }
+                    ]
+                    return defaultFeatures
+                }
+
+                const features = ref(extractFeatures(prdRaw))
+
+                const showToast = (msg) => {
+                    toastMsg.value = msg
+                    setTimeout(() => toastMsg.value = '', 2000)
+                }
+
+                const showFeature = (feature) => {
+                    showToast(`点击了功能: ${feature.title}`)
+                }
+
+                return {
+                    activeTab,
+                    features,
+                    prdRaw,
+                    toastMsg,
+                    showToast,
+                    showFeature
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+
+</html>

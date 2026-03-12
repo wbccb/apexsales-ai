@@ -41,9 +41,9 @@ from .config import (
     get_asr_language,
     get_asr_model_name,
     get_asr_provider,
-    get_llm_api_key,
-    get_llm_api_url,
-    get_llm_model,
+    get_stage_api_key,
+    get_stage_base_url,
+    get_stage_model_name,
     get_llm_temperature,
     get_llm_timeout_seconds,
     get_poc_mode,
@@ -51,6 +51,7 @@ from .config import (
     get_poc_rule_template_path,
     get_prd_mode,
     get_prd_prompt_template,
+    get_contract_prompt_template,
     get_contract_style_path,
     get_contract_template_path,
     get_contract_title,
@@ -84,49 +85,35 @@ knowledge_documents_by_id = cast(Dict[str, Dict[str, Any]], {})
 knowledge_chunks_by_doc = cast(Dict[str, List[Dict[str, Any]]], {})
 # PRD 引用来源内存缓存
 prd_citations_by_prd = cast(Dict[str, List[Dict[str, Any]]], {})
+# 模型配置缓存
+model_configs_by_stage = cast(Dict[str, Dict[str, str]], {})
 # 模型懒加载容器
 asr_model = None
 faster_whisper_model = None
 voice_encoder = None
 
 DEFAULT_POC_RULE_TEMPLATE = (
-    'import React from "react";\n'
-    "\n"
-    "const prd = `{{prd}}`;\n"
-    "\n"
-    "const features = [\n"
-    '  { title: "需求分析", desc: "自动抽取关键痛点与流程" },\n'
-    '  { title: "方案推荐", desc: "结构化输出可执行方案" },\n'
-    '  { title: "交互预览", desc: "快速生成前端 Demo" },\n'
-    "];\n"
-    "\n"
-    "export default function App() {\n"
-    "  return (\n"
-    '    <div className="min-h-screen bg-slate-950 text-slate-100 p-8">\n'
-    '      <header className="mx-auto max-w-5xl space-y-2">\n'
-    '        <h1 className="text-3xl font-semibold">POC Demo</h1>\n'
-    '        <p className="text-slate-300">基于 PRD 自动生成的前端原型</p>\n'
-    "      </header>\n"
-    '      <main className="mx-auto mt-8 grid max-w-5xl gap-6">\n'
-    '        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">\n'
-    '          <h2 className="text-xl font-medium">核心功能</h2>\n'
-    '          <div className="mt-4 grid gap-4 md:grid-cols-3">\n'
-    "            {features.map((item) => (\n"
-    '              <div key={item.title} className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">\n'
-    '                <h3 className="text-base font-semibold">{item.title}</h3>\n'
-    '                <p className="mt-2 text-sm text-slate-300">{item.desc}</p>\n'
-    "              </div>\n"
-    "            ))}\n"
-    "          </div>\n"
-    "        </section>\n"
-    '        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">\n'
-    '          <h2 className="text-xl font-medium">PRD 摘要</h2>\n'
-    '          <pre className="mt-4 whitespace-pre-wrap text-sm text-slate-300">{prd}</pre>\n'
-    "        </section>\n"
-    "      </main>\n"
-    "    </div>\n"
-    "  );\n"
-    "}\n"
+    '<!DOCTYPE html>\n'
+    '<html lang="zh-CN">\n'
+    '<head>\n'
+    '  <meta charset="UTF-8">\n'
+    '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+    '  <title>POC Demo</title>\n'
+    '  <script src="https://cdn.tailwindcss.com"></script>\n'
+    '</head>\n'
+    '<body class="min-h-screen bg-slate-950 text-slate-100 p-8">\n'
+    '  <header class="mx-auto max-w-5xl space-y-2">\n'
+    '    <h1 class="text-3xl font-semibold">POC Demo</h1>\n'
+    '    <p class="text-slate-300">基于 PRD 自动生成的前端原型 (Rule 模式)</p>\n'
+    '  </header>\n'
+    '  <main class="mx-auto mt-8 grid max-w-5xl gap-6">\n'
+    '    <section class="rounded-2xl border border-slate-800 bg-slate-900 p-6">\n'
+    '      <h2 class="text-xl font-medium">PRD 内容摘要</h2>\n'
+    '      <pre class="mt-4 whitespace-pre-wrap text-sm text-slate-300 font-mono bg-slate-950/50 p-4 rounded-lg">{{prd}}</pre>\n'
+    '    </section>\n'
+    '  </main>\n'
+    '</body>\n'
+    '</html>'
 )
 
 DEFAULT_CONTRACT_TEMPLATE = (
@@ -283,10 +270,56 @@ class KnowledgeRetrieveResponse(BaseModel):
     matches: List[KnowledgeMatch]
 
 
+class ModelConfigItem(BaseModel):
+    stage: str
+    base_url: str
+    model_name: str
+    api_key: str
+
+
+class ModelConfigListResponse(BaseModel):
+    configs: List[ModelConfigItem]
+
+
+class ModelConfigSaveRequest(BaseModel):
+    configs: List[ModelConfigItem]
+
+
+class ModelConfigSaveResponse(BaseModel):
+    saved: bool
+    configs: List[ModelConfigItem]
+
+
 @app.get("/health")
 # 健康检查接口
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/model-configs", response_model=ModelConfigListResponse)
+def get_model_configs() -> ModelConfigListResponse:
+    configs = [
+        ModelConfigItem(**build_model_config(stage))
+        for stage in get_model_config_stages()
+    ]
+    return ModelConfigListResponse(configs=configs)
+
+
+@app.post("/model-configs", response_model=ModelConfigSaveResponse)
+def save_model_configs(payload: ModelConfigSaveRequest) -> ModelConfigSaveResponse:
+    for item in payload.configs:
+        stage = normalize_stage_name(item.stage)
+        model_configs_by_stage[stage] = {
+            "base_url": item.base_url.strip(),
+            "model_name": item.model_name.strip(),
+            "api_key": item.api_key.strip()
+        }
+    save_runtime_state()
+    configs = [
+        ModelConfigItem(**build_model_config(stage))
+        for stage in get_model_config_stages()
+    ]
+    return ModelConfigSaveResponse(saved=True, configs=configs)
 
 
 def get_asr_model():
@@ -556,6 +589,30 @@ def serialize_knowledge_chunks() -> Dict[str, List[Dict[str, Any]]]:
     return payload
 
 
+def normalize_stage_name(stage: str) -> str:
+    return stage.strip().lower()
+
+
+def get_model_config_stages() -> List[str]:
+    base_stages = ["voice", "prd", "poc", "contract"]
+    extra = [stage for stage in model_configs_by_stage.keys() if stage not in base_stages]
+    return base_stages + sorted(extra)
+
+
+def build_model_config(stage: str) -> Dict[str, str]:
+    normalized = normalize_stage_name(stage)
+    stored = model_configs_by_stage.get(normalized, {})
+    base_url = str(stored.get("base_url") or get_stage_base_url(normalized))
+    model_name = str(stored.get("model_name") or get_stage_model_name(normalized))
+    api_key = str(stored.get("api_key") or get_stage_api_key(normalized))
+    return {
+        "stage": normalized,
+        "base_url": base_url,
+        "model_name": model_name,
+        "api_key": api_key
+    }
+
+
 def save_runtime_state() -> None:
     payload = {
         "utterances_by_session": utterances_by_session,
@@ -567,7 +624,8 @@ def save_runtime_state() -> None:
         "voice_embeddings_by_user": serialize_voice_embeddings(),
         "knowledge_documents_by_id": knowledge_documents_by_id,
         "knowledge_chunks_by_doc": serialize_knowledge_chunks(),
-        "prd_citations_by_prd": prd_citations_by_prd
+        "prd_citations_by_prd": prd_citations_by_prd,
+        "model_configs_by_stage": model_configs_by_stage
     }
     with open(get_runtime_state_path(), "w", encoding="utf-8") as file:
         json.dump(payload, file, ensure_ascii=False)
@@ -620,6 +678,10 @@ def load_runtime_state() -> None:
             )
     prd_citations_by_prd.clear()
     prd_citations_by_prd.update(cast(Dict[str, List[Dict[str, Any]]], payload.get("prd_citations_by_prd", {})))
+    model_configs_by_stage.clear()
+    model_configs_by_stage.update(
+        cast(Dict[str, Dict[str, str]], payload.get("model_configs_by_stage", {}))
+    )
 
 
 def search_knowledge_matches(
@@ -732,50 +794,64 @@ def append_citations_to_markdown(markdown: str, citations: List[CitationItem]) -
     return "\n".join(lines)
 
 
-def generate_prd_markdown_rule(transcript: str) -> str:
-    # 规则版 PRD 生成，确保无 LLM 时可用
+def generate_prd_markdown_rule(transcript: str, rag_context: str) -> str:
     lines = [line for line in transcript.splitlines() if line.strip()]
-    highlights = lines[:6]
-    bullets = "\n".join([f"- {item}" for item in highlights]) or "- 暂无可用逐字稿片段"
+    pain_keywords = ("痛点", "问题", "困难", "慢", "阻塞", "缺少", "无法", "不便", "分散")
+    feature_keywords = ("需要", "希望", "功能", "支持", "新增", "增加", "自动", "提醒", "看板", "导出")
+    background_candidates = lines[:4]
+    pain_points = [line for line in lines if any(keyword in line for keyword in pain_keywords)]
+    features = [line for line in lines if any(keyword in line for keyword in feature_keywords)]
+    background_bullets = "\n".join([f"- {item}" for item in background_candidates]) or "- 暂无可用逐字稿片段"
+    pain_bullets = "\n".join([f"- {item}" for item in pain_points]) or "- 待补充"
+    feature_bullets = "\n".join([f"- {item}" for item in features]) or "- 待补充"
+    rag_bullets = "\n".join([f"- {line}" for line in rag_context.splitlines() if line.strip()]) or "- 暂无检索到的参考资料"
     return "\n".join(
         [
             "# 需求概述",
             "",
             "## 需求背景",
-            bullets,
+            background_bullets,
             "",
             "## 核心痛点",
-            bullets,
+            pain_bullets,
             "",
             "## 业务流程",
             "- 待补充",
             "",
             "## 功能清单",
-            "- 待补充",
+            feature_bullets,
             "",
             "## 交互草图描述",
             "- 待补充",
             "",
             "## 报价建议",
-            "- 待补充"
+            "- 待补充",
+            "",
+            "## 参考资料",
+            rag_bullets
         ]
     )
 
 
-def generate_prd_markdown_llm(transcript: str) -> str:
+def generate_prd_markdown_llm(transcript: str, rag_context: str) -> str:
     # LLM 版 PRD 生成，通过统一 API 调用
-    api_url = get_llm_api_url()
-    model = get_llm_model()
+    config = build_model_config("prd")
+    api_url = config["base_url"]
+    model = config["model_name"]
     if not api_url or not model:
         raise HTTPException(status_code=500, detail="LLM 未配置")
-    prompt = get_prd_prompt_template().replace("{{transcript}}", transcript)
+    prompt = (
+        get_prd_prompt_template()
+        .replace("{{transcript}}", transcript)
+        .replace("{{rag_context}}", rag_context or "无")
+    )
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": get_llm_temperature()
     }
     headers = {"Content-Type": "application/json"}
-    api_key = get_llm_api_key()
+    api_key = config["api_key"]
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
@@ -799,12 +875,11 @@ def generate_prd_markdown_llm(transcript: str) -> str:
     return content
 
 
-def generate_prd_markdown(transcript: str) -> str:
-    # 根据模式选择规则版或 LLM 版 PRD
+def generate_prd_markdown(transcript: str, rag_context: str) -> str:
     mode = get_prd_mode()
     if mode == "llm":
-        return generate_prd_markdown_llm(transcript)
-    return generate_prd_markdown_rule(transcript)
+        return generate_prd_markdown_llm(transcript, rag_context)
+    return generate_prd_markdown_rule(transcript, rag_context)
 
 
 def load_text_template(path: str, fallback: str) -> str:
@@ -848,8 +923,9 @@ def generate_poc_code_rule(prd_markdown: str) -> str:
 
 def generate_poc_code_llm(prd_markdown: str) -> str:
     # LLM 版 POC 代码生成，通过统一 API 调用
-    api_url = get_llm_api_url()
-    model = get_llm_model()
+    config = build_model_config("poc")
+    api_url = config["base_url"]
+    model = config["model_name"]
     if not api_url or not model:
         raise HTTPException(status_code=500, detail="LLM 未配置")
     prompt = get_poc_prompt_template().replace("{{prd}}", prd_markdown)
@@ -859,7 +935,73 @@ def generate_poc_code_llm(prd_markdown: str) -> str:
         "temperature": get_llm_temperature()
     }
     headers = {"Content-Type": "application/json"}
-    api_key = get_llm_api_key()
+    api_key = config["api_key"]
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        response = requests.post(
+            api_url,
+            json=payload,
+            headers=headers,
+            timeout=get_llm_timeout_seconds()
+        )
+    except requests.RequestException:
+        raise HTTPException(status_code=500, detail="LLM 请求失败")
+    if response.status_code >= 400:
+        raise HTTPException(status_code=500, detail="LLM 返回异常")
+    data = response.json()
+    choices = data.get("choices", [])
+    if not choices:
+        raise HTTPException(status_code=500, detail="LLM 返回空内容")
+    content = choices[0].get("message", {}).get("content")
+    if not content:
+        raise HTTPException(status_code=500, detail="LLM 返回空内容")
+    
+    # 清理 markdown 代码块标记
+    content = content.strip()
+    if content.startswith("```"):
+        first_newline = content.find("\n")
+        if first_newline != -1:
+            content = content[first_newline+1:]
+        if content.endswith("```"):
+            content = content[:-3]
+    return content.strip()
+
+
+def generate_poc_code(prd_markdown: str) -> str:
+    # 根据模式选择规则版或 LLM 版 POC
+    mode = get_poc_mode()
+    if mode == "llm":
+        return generate_poc_code_llm(prd_markdown)
+    return generate_poc_code_rule(prd_markdown)
+
+
+def generate_contract_llm(prd_markdown: str, rag_context: str) -> str:
+    # LLM 版合同生成
+    config = build_model_config("contract")
+    api_url = config["base_url"]
+    model = config["model_name"]
+    if not api_url or not model:
+        # 如果未配置，尝试降级到全局 LLM 配置
+        from .config import get_llm_api_url, get_llm_model, get_llm_api_key
+        api_url = get_llm_api_url()
+        model = get_llm_model()
+        if not api_url or not model:
+            raise HTTPException(status_code=500, detail="LLM 未配置 (Contract)")
+        config = {"api_key": get_llm_api_key()}
+
+    prompt = (
+        get_contract_prompt_template()
+        .replace("{{prd}}", prd_markdown)
+        .replace("{{rag_context}}", rag_context or "无")
+    )
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": get_llm_temperature()
+    }
+    headers = {"Content-Type": "application/json"}
+    api_key = config.get("api_key")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
@@ -881,14 +1023,6 @@ def generate_poc_code_llm(prd_markdown: str) -> str:
     if not content:
         raise HTTPException(status_code=500, detail="LLM 返回空内容")
     return content
-
-
-def generate_poc_code(prd_markdown: str) -> str:
-    # 根据模式选择规则版或 LLM 版 POC
-    mode = get_poc_mode()
-    if mode == "llm":
-        return generate_poc_code_llm(prd_markdown)
-    return generate_poc_code_rule(prd_markdown)
 
 
 def wrap_contract_text(text: str, max_chars: int) -> List[str]:
@@ -1228,45 +1362,70 @@ def inject_mock_utterances(session_id: str) -> SessionUtterancesResponse:
 @app.post("/session/{session_id}/summary", response_model=SummaryResponse)
 # 会话总结生成接口
 def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -> SummaryResponse:
-    utterances = utterances_by_session.get(session_id, [])
-    if not utterances:
-        raise HTTPException(status_code=400, detail="会话暂无逐字稿")
-    rag_enabled = True if payload is None else payload.rag_enabled
-    top_k = 5 if payload is None else max(1, min(20, payload.top_k))
-    business_tag = None if payload is None else payload.business_tag
-    transcript = build_transcript(utterances)
-    retrieved: List[Dict[str, Any]] = []
-    if rag_enabled:
-        retrieved = search_knowledge_matches(
-            query=transcript,
-            top_k=top_k,
-            business_tag=business_tag
+    try:
+        utterances = utterances_by_session.get(session_id, [])
+        if not utterances:
+            raise HTTPException(status_code=400, detail="会话暂无逐字稿")
+        
+        rag_enabled = True if payload is None else payload.rag_enabled
+        top_k = 5 if payload is None else max(1, min(20, payload.top_k))
+        business_tag = None if payload is None else payload.business_tag
+        
+        transcript = build_transcript(utterances)
+        if not transcript.strip():
+            raise HTTPException(status_code=400, detail="逐字稿内容为空，无法生成总结")
+
+        retrieved: List[Dict[str, Any]] = []
+        if rag_enabled:
+            try:
+                retrieved = search_knowledge_matches(
+                    query=transcript,
+                    top_k=top_k,
+                    business_tag=business_tag
+                )
+            except Exception as e:
+                print(f"[Warning] RAG retrieval failed: {e}")
+                # RAG 失败不应阻断流程，降级为空
+                retrieved = []
+
+        citations = build_citation_models(retrieved)
+        rag_context = build_rag_context(retrieved)
+        
+        try:
+            markdown = generate_prd_markdown(transcript, rag_context)
+        except HTTPException as he:
+            raise he
+        except Exception as e:
+            print(f"[Error] PRD generation failed: {e}")
+            raise HTTPException(status_code=500, detail=f"PRD 生成失败: {str(e)}")
+
+        markdown = append_citations_to_markdown(markdown, citations)
+        
+        prd_id = str(uuid4())
+        prds_by_id[prd_id] = {
+            "id": prd_id,
+            "session_id": session_id,
+            "markdown": markdown,
+            "edited_markdown": None,
+            "rag_enabled": rag_enabled
+        }
+        prd_citations_by_prd[prd_id] = [citation.model_dump() for citation in citations]
+        prds_by_session[session_id] = prd_id
+        save_runtime_state()
+        
+        return SummaryResponse(
+            prd_id=prd_id,
+            markdown=markdown,
+            citations=citations,
+            rag_used=len(citations) > 0,
+            retrieval_query=transcript
         )
-    citations = build_citation_models(retrieved)
-    rag_context = build_rag_context(retrieved)
-    summary_input = transcript
-    if rag_context:
-        summary_input = f"{transcript}\n\n[检索增强上下文]\n{rag_context}"
-    markdown = generate_prd_markdown(summary_input)
-    markdown = append_citations_to_markdown(markdown, citations)
-    prd_id = str(uuid4())
-    prds_by_id[prd_id] = {
-        "id": prd_id,
-        "session_id": session_id,
-        "markdown": markdown,
-        "edited_markdown": None,
-        "rag_enabled": rag_enabled
-    }
-    prd_citations_by_prd[prd_id] = [citation.model_dump() for citation in citations]
-    prds_by_session[session_id] = prd_id
-    save_runtime_state()
-    return SummaryResponse(
-        prd_id=prd_id,
-        markdown=markdown,
-        citations=citations,
-        rag_used=len(citations) > 0,
-        retrieval_query=transcript
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
 
 
 @app.post("/prd/{prd_id}/save", response_model=PrdSaveResponse)
@@ -1320,10 +1479,20 @@ def generate_contract(prd_id: str) -> ContractResponse:
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD 不存在")
     markdown = prd.get("edited_markdown") or prd.get("markdown") or ""
-    quote_payload = extract_quote_payload(markdown)
-    contract_body = markdown
-    if quote_payload:
-        contract_body = f"{markdown}\n\n## 结构化报价\n{format_quote_payload(quote_payload)}"
+    
+    # RAG 检索上下文
+    query = markdown[:500].replace("\n", " ")
+    retrieved = search_knowledge_matches(query=query, top_k=5, business_tag=None)
+    rag_context = build_rag_context(retrieved)
+    
+    # LLM 生成合同
+    contract_body = generate_contract_llm(markdown, rag_context)
+    
+    # 提取结构化报价用于元数据
+    quote_payload = extract_quote_payload(contract_body)
+    if not quote_payload:
+        quote_payload = extract_quote_payload(markdown)
+    
     contract_id = str(uuid4())
     contract_dir = get_contract_storage_dir()
     file_path = os.path.join(contract_dir, f"{contract_id}.pdf")
