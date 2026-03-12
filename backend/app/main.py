@@ -14,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
 from resemblyzer import VoiceEncoder, preprocess_wav
 from pypdf import PdfReader
@@ -122,19 +124,19 @@ DEFAULT_POC_RULE_TEMPLATE = (
     '</html>'
 )
 
+# 合同 PDF 的基础模板，允许 LLM 输出完整合同正文
 DEFAULT_CONTRACT_TEMPLATE = (
     "签署日期：{{date}}\n"
     "\n"
-    "项目背景与需求：\n"
     "{{prd_markdown}}\n"
 )
 
 DEFAULT_CONTRACT_STYLE: Dict[str, Any] = {
     "title": "销售 AI 项目合作合同",
     "render_title": True,
-    "title_font": "Helvetica-Bold",
+    "title_font": "STSong-Light",
     "title_size": 16,
-    "body_font": "Helvetica",
+    "body_font": "STSong-Light",
     "body_size": 11,
     "margin_left": 40,
     "margin_top": 40,
@@ -1185,19 +1187,120 @@ def generate_contract_llm(prd_markdown: str, rag_context: str) -> str:
     return content
 
 
-def wrap_contract_text(text: str, max_chars: int) -> List[str]:
-    # 简单按字符长度做换行，避免 PDF 文字溢出
+def wrap_contract_text(
+    text: str,
+    font_name: str,
+    font_size: float,
+    max_width: float
+) -> List[str]:
     lines: List[str] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             lines.append("")
             continue
-        while len(line) > max_chars:
-            lines.append(line[:max_chars])
-            line = line[max_chars:]
-        lines.append(line)
+        buffer = ""
+        for char in line:
+            candidate = f"{buffer}{char}"
+            if pdfmetrics.stringWidth(candidate, font_name, font_size) <= max_width:
+                buffer = candidate
+                continue
+            if buffer:
+                lines.append(buffer)
+            buffer = char
+        if buffer:
+            lines.append(buffer)
     return lines
+
+
+# 清理 LLM 合同输出中的思考标签，避免 <think> 内容进入合同正文
+def strip_contract_think_content(text: str) -> str:
+    # 用正则匹配并移除 <think>...</think> 内容
+    return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+
+
+# 去除 Markdown 代码块包裹，保留内部正文内容
+def strip_contract_markdown_fences(text: str) -> str:
+    # 用代码块正则替换掉围栏，只保留块内文本
+    return re.sub(r"```(?:\w+)?\s*([\s\S]*?)```", r"\1", text)
+
+
+# 过滤 “来源依据/参考资料” 段落，避免引用内容进入合同正文
+def remove_contract_reference_section(text: str) -> str:
+    # 拆分为逐行处理，便于定位标题
+    lines = text.splitlines()
+    # 准备容器保存保留行
+    cleaned_lines: List[str] = []
+    # 标记是否进入引用段落
+    skip_reference = False
+    for line in lines:
+        # 先去掉 Markdown 标题符号再判断标题内容
+        normalized = re.sub(r"^#{1,6}\s*", "", line).strip()
+        # 命中引用标题则开始跳过后续内容
+        if normalized.startswith("来源依据") or normalized.startswith("参考资料"):
+            skip_reference = True
+        # 若处于引用区段则不保留当前行
+        if skip_reference:
+            continue
+        # 正常行进入结果
+        cleaned_lines.append(line)
+    # 组装为字符串输出
+    return "\n".join(cleaned_lines)
+
+
+# 清理单行中的 Markdown 结构标记，输出更接近正式合同文本
+def normalize_contract_line(line: str) -> str:
+    normalized = re.sub(r"^#{1,6}\s*", "", line).strip()
+    normalized = re.sub(r"^\d+\.\s*", "", normalized)
+    normalized = re.sub(r"^[-*]\s*", "", normalized)
+    normalized = re.sub(r"^>\s*", "", normalized)
+    normalized = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", normalized)
+    normalized = re.sub(r"[*_`]+", "", normalized)
+    normalized = re.sub(r"\s{2,}", " ", normalized).strip()
+    return normalized
+
+
+# 合同正文清洗入口，统一处理 <think>、Markdown 包裹与引用段落
+def clean_contract_text(text: str) -> str:
+    # 先移除 <think> 内容
+    without_think = strip_contract_think_content(text)
+    # 再移除代码块围栏
+    without_fences = strip_contract_markdown_fences(without_think)
+    # 然后去掉引用段落
+    without_references = remove_contract_reference_section(without_fences)
+    # 逐行清理 Markdown 结构标记
+    cleaned_lines = [normalize_contract_line(line) for line in without_references.splitlines()]
+    # 合并并裁剪首尾空白
+    return "\n".join(cleaned_lines).strip()
+
+
+# PRD 内容清洗入口，用于合同生成上下文
+def clean_prd_for_contract(text: str) -> str:
+    # 复用合同清洗策略，保证输入干净
+    return clean_contract_text(text)
+
+
+def ensure_contract_fonts(style: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    except Exception:
+        return style
+    updated = style.copy()
+    fallback_fonts = {
+        "Helvetica",
+        "Helvetica-Bold",
+        "Times-Roman",
+        "Times-Bold",
+        "Courier",
+        "Courier-Bold"
+    }
+    title_font = str(updated.get("title_font") or "")
+    body_font = str(updated.get("body_font") or "")
+    if not title_font or title_font in fallback_fonts:
+        updated["title_font"] = "STSong-Light"
+    if not body_font or body_font in fallback_fonts:
+        updated["body_font"] = "STSong-Light"
+    return updated
 
 
 def extract_quote_payload(markdown: str) -> Optional[Dict[str, Any]]:
@@ -1246,6 +1349,7 @@ def format_quote_payload(quote_payload: Dict[str, Any]) -> str:
 
 def render_contract_pdf(prd_markdown: str, file_path: str) -> None:
     style = load_json_template(get_contract_style_path(), DEFAULT_CONTRACT_STYLE)
+    style = ensure_contract_fonts(style)
     title = style.get("title") or get_contract_title()
     template = load_text_template(
         get_contract_template_path(),
@@ -1263,6 +1367,7 @@ def render_contract_pdf(prd_markdown: str, file_path: str) -> None:
     margin_bottom = float(style.get("margin_bottom", 40))
     line_height = float(style.get("line_height", 16))
     max_chars = int(style.get("max_chars", 80))
+    max_width = max(0.0, width - margin_left * 2)
     y = height - margin_top
     if bool(style.get("render_title", True)):
         pdf.setFont(
@@ -1271,18 +1376,14 @@ def render_contract_pdf(prd_markdown: str, file_path: str) -> None:
         )
         pdf.drawString(margin_left, y, title)
         y -= float(style.get("title_spacing", 20))
-    pdf.setFont(
-        str(style.get("body_font", "Helvetica")),
-        float(style.get("body_size", 11))
-    )
-    for line in wrap_contract_text(rendered, max_chars):
+    body_font = str(style.get("body_font", "Helvetica"))
+    body_size = float(style.get("body_size", 11))
+    pdf.setFont(body_font, body_size)
+    for line in wrap_contract_text(rendered, body_font, body_size, max_width):
         if y < margin_bottom:
             pdf.showPage()
             y = height - margin_top
-            pdf.setFont(
-                str(style.get("body_font", "Helvetica")),
-                float(style.get("body_size", 11))
-            )
+            pdf.setFont(body_font, body_size)
         pdf.drawString(margin_left, y, line)
         y -= line_height
     pdf.save()
@@ -1733,33 +1834,48 @@ def generate_contract(prd_id: str) -> ContractResponse:
     prd = prds_by_id.get(prd_id)
     if prd is None:
         raise HTTPException(status_code=404, detail="PRD 不存在")
+    # 获取 PRD 原始文本
     markdown = prd.get("edited_markdown") or prd.get("markdown") or ""
-    
-    # RAG 检索上下文
-    query = markdown[:500].replace("\n", " ")
+    # 清洗 PRD，去除 <think>、Markdown 包裹与引用段落
+    cleaned_prd = clean_prd_for_contract(markdown)
+    # 生成 RAG 检索 query，避免引用与 Markdown 噪音
+    query = cleaned_prd[:500].replace("\n", " ")
+    # 触发知识检索
     retrieved = search_knowledge_matches(query=query, top_k=5, business_tag=None)
+    # 构建检索上下文
     rag_context = build_rag_context(retrieved)
-    
-    # LLM 生成合同
-    contract_body = generate_contract_llm(markdown, rag_context)
-    
+    # 调用 LLM 生成合同正文
+    contract_body_raw = generate_contract_llm(cleaned_prd, rag_context)
+    # 清洗合同正文，去除 Markdown 与引用段落
+    contract_body = clean_contract_text(contract_body_raw)
+    # LLM 输出异常时，回退到清洗后的 PRD
+    if not contract_body:
+        contract_body = clean_contract_text(cleaned_prd)
     # 提取结构化报价用于元数据
     quote_payload = extract_quote_payload(contract_body)
+    # 如未命中报价则回退到 PRD
     if not quote_payload:
-        quote_payload = extract_quote_payload(markdown)
-    
+        quote_payload = extract_quote_payload(cleaned_prd)
+    # 生成合同 ID
     contract_id = str(uuid4())
+    # 获取合同存储目录
     contract_dir = get_contract_storage_dir()
+    # 生成 PDF 文件路径
     file_path = os.path.join(contract_dir, f"{contract_id}.pdf")
+    # 渲染 PDF 合同
     render_contract_pdf(contract_body, file_path)
+    # 写入内存缓存
     contracts_by_id[contract_id] = {
         "id": contract_id,
         "prd_id": prd_id,
         "pdf_path": file_path,
         "quote_payload": quote_payload
     }
+    # 持久化运行时状态
     save_runtime_state()
+    # 生成下载地址
     pdf_url = f"/contract/{contract_id}/download"
+    # 返回结果
     return ContractResponse(contract_id=contract_id, pdf_url=pdf_url)
 
 
