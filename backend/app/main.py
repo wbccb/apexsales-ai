@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import logging
 import json
 import os
 import re
@@ -58,7 +59,12 @@ from .config import (
     get_speaker_similarity_threshold
 )
 
+# 初始化 FastAPI 应用实例
 app = FastAPI(title="ApexSales AI API", version="0.1.0")
+# 复用 Uvicorn 的错误日志通道，确保日志出现在控制台
+logger = logging.getLogger("uvicorn.error")
+# 设置日志级别为 INFO，保证关键流程日志可见
+logger.setLevel(logging.INFO)
 
 app.add_middleware(
     CORSMiddleware,
@@ -833,45 +839,119 @@ def generate_prd_markdown_rule(transcript: str, rag_context: str) -> str:
     )
 
 
+def truncate_log_text(text: Optional[str], max_len: int = 800) -> str:
+    # 裁剪日志文本，避免日志过长影响排查
+    if text is None:
+        # 兼容 None 返回空字符串
+        return ""
+    # 计算文本长度
+    if len(text) <= max_len:
+        # 长度在阈值内直接返回
+        return text
+    # 超过阈值则截断并追加省略号
+    return text[:max_len] + "..."
+
+
+def normalize_llm_url(base_url: str) -> str:
+    # 统一 LLM 请求地址，兼容传入 /v1 或 /v1/ 的情况
+    clean_url = base_url.strip()
+    # 空字符串直接返回
+    if not clean_url:
+        return clean_url
+    # 如果已包含 /chat/completions 则不再拼接
+    if clean_url.rstrip("/").endswith("/chat/completions"):
+        return clean_url
+    # 如果以 /v1 结尾，则追加 /chat/completions
+    if clean_url.rstrip("/").endswith("/v1"):
+        return clean_url.rstrip("/") + "/chat/completions"
+    # 如果未包含版本路径，则保持原样
+    return clean_url
+
+
 def generate_prd_markdown_llm(transcript: str, rag_context: str) -> str:
-    # LLM 版 PRD 生成，通过统一 API 调用
+    # 通过 LLM 生成 PRD Markdown，统一封装 API 调用与异常处理
     config = build_model_config("prd")
+    # 读取 LLM API 地址
     api_url = config["base_url"]
+    # 规范化 LLM API 地址
+    api_url = normalize_llm_url(api_url)
+    # 读取 LLM 模型名称
     model = config["model_name"]
+    # 校验基础配置是否存在
     if not api_url or not model:
+        # 配置缺失时直接抛出错误
         raise HTTPException(status_code=500, detail="LLM 未配置")
+    # 构建 LLM Prompt
     prompt = (
         get_prd_prompt_template()
         .replace("{{transcript}}", transcript)
         .replace("{{rag_context}}", rag_context or "无")
     )
+    # 构建请求载荷
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": get_llm_temperature()
     }
+    # 构建请求头
     headers = {"Content-Type": "application/json"}
+    # 读取 API Key（不写入日志，避免泄露）
     api_key = config["api_key"]
+    # 如有 API Key 则写入 Authorization
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
+        # 发起 LLM 请求
         response = requests.post(
             api_url,
             json=payload,
             headers=headers,
             timeout=get_llm_timeout_seconds()
         )
-    except requests.RequestException:
-        raise HTTPException(status_code=500, detail="LLM 请求失败")
+    except requests.RequestException as exc:
+        # 网络异常或超时直接抛出
+        logger.exception("llm_prd_request_failed error=%s", str(exc))
+        raise HTTPException(status_code=500, detail="LLM 请求失败") from exc
+    # LLM 返回异常状态码
     if response.status_code >= 400:
-        raise HTTPException(status_code=500, detail="LLM 返回异常")
-    data = response.json()
+        # 读取响应文本并裁剪，便于排查
+        response_text = truncate_log_text(response.text)
+        # 记录错误日志
+        logger.error(
+            "llm_prd_http_error status=%s body=%s",
+            response.status_code,
+            response_text
+        )
+        # 抛出包含状态码与响应片段的错误
+        raise HTTPException(
+            status_code=500,
+            detail=f"LLM 返回异常: status={response.status_code} body={response_text}"
+        )
+    try:
+        # 解析 JSON 响应
+        data = response.json()
+    except ValueError as exc:
+        # JSON 解析失败则记录响应文本
+        response_text = truncate_log_text(response.text)
+        # 打印解析失败日志
+        logger.error(
+            "llm_prd_invalid_json status=%s body=%s",
+            response.status_code,
+            response_text
+        )
+        # 抛出错误说明返回不是 JSON
+        raise HTTPException(status_code=500, detail="LLM 返回非 JSON") from exc
+    # 读取 choices
     choices = data.get("choices", [])
+    # choices 为空则报错
     if not choices:
         raise HTTPException(status_code=500, detail="LLM 返回空内容")
+    # 提取 content
     content = choices[0].get("message", {}).get("content")
+    # content 为空则报错
     if not content:
         raise HTTPException(status_code=500, detail="LLM 返回空内容")
+    # 返回生成内容
     return content
 
 
@@ -925,6 +1005,8 @@ def generate_poc_code_llm(prd_markdown: str) -> str:
     # LLM 版 POC 代码生成，通过统一 API 调用
     config = build_model_config("poc")
     api_url = config["base_url"]
+    # 规范化 LLM API 地址
+    api_url = normalize_llm_url(api_url)
     model = config["model_name"]
     if not api_url or not model:
         raise HTTPException(status_code=500, detail="LLM 未配置")
@@ -980,6 +1062,8 @@ def generate_contract_llm(prd_markdown: str, rag_context: str) -> str:
     # LLM 版合同生成
     config = build_model_config("contract")
     api_url = config["base_url"]
+    # 规范化 LLM API 地址
+    api_url = normalize_llm_url(api_url)
     model = config["model_name"]
     if not api_url or not model:
         # 如果未配置，尝试降级到全局 LLM 配置
@@ -1362,46 +1446,115 @@ def inject_mock_utterances(session_id: str) -> SessionUtterancesResponse:
 @app.post("/session/{session_id}/summary", response_model=SummaryResponse)
 # 会话总结生成接口
 def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -> SummaryResponse:
+    # 使用 try 包裹全流程，统一输出日志与异常
     try:
+        # 记录摘要生成开始日志
+        logger.info(
+            "summary_start session_id=%s payload=%s",
+            session_id,
+            payload.model_dump() if payload else None
+        )
+        # 从内存中读取逐字稿
         utterances = utterances_by_session.get(session_id, [])
+        # 无逐字稿则返回 400
         if not utterances:
             raise HTTPException(status_code=400, detail="会话暂无逐字稿")
-        
+
+        # 是否启用 RAG（默认开启）
         rag_enabled = True if payload is None else payload.rag_enabled
+        # top_k 控制检索数量并做安全限制
         top_k = 5 if payload is None else max(1, min(20, payload.top_k))
+        # 业务标签用于过滤知识库
         business_tag = None if payload is None else payload.business_tag
-        
+        # 记录请求参数与逐字稿数量
+        logger.info(
+            "summary_params session_id=%s rag_enabled=%s top_k=%s business_tag=%s utterances=%s",
+            session_id,
+            rag_enabled,
+            top_k,
+            business_tag,
+            len(utterances)
+        )
+
+        # 拼接逐字稿为文本
         transcript = build_transcript(utterances)
+        # 逐字稿为空则直接返回
         if not transcript.strip():
             raise HTTPException(status_code=400, detail="逐字稿内容为空，无法生成总结")
+        # 记录逐字稿长度，便于排查
+        logger.info(
+            "summary_transcript session_id=%s transcript_len=%s",
+            session_id,
+            len(transcript)
+        )
 
+        # 初始化检索结果
         retrieved: List[Dict[str, Any]] = []
+        # 仅在开启 RAG 时检索
         if rag_enabled:
             try:
+                # 执行向量检索
                 retrieved = search_knowledge_matches(
                     query=transcript,
                     top_k=top_k,
                     business_tag=business_tag
                 )
             except Exception as e:
-                print(f"[Warning] RAG retrieval failed: {e}")
-                # RAG 失败不应阻断流程，降级为空
+                # RAG 失败记录警告日志
+                logger.warning(
+                    "summary_rag_failed session_id=%s error=%s",
+                    session_id,
+                    str(e)
+                )
+                # 降级为空检索结果
                 retrieved = []
 
+        # 构建引用模型列表
         citations = build_citation_models(retrieved)
+        # 构建 RAG 上下文文本
         rag_context = build_rag_context(retrieved)
-        
+        # 记录检索与引用数量
+        logger.info(
+            "summary_rag session_id=%s retrieved=%s citations=%s",
+            session_id,
+            len(retrieved),
+            len(citations)
+        )
+
         try:
+            # 生成 PRD Markdown
             markdown = generate_prd_markdown(transcript, rag_context)
         except HTTPException as he:
+            # 记录 LLM/规则异常详情
+            logger.error(
+                "summary_prd_http_error session_id=%s detail=%s",
+                session_id,
+                he.detail
+            )
+            # 将 HTTPException 原样抛出
             raise he
         except Exception as e:
-            print(f"[Error] PRD generation failed: {e}")
+            # 记录未知异常堆栈
+            logger.exception(
+                "summary_prd_failed session_id=%s error=%s",
+                session_id,
+                str(e)
+            )
+            # 抛出统一异常给前端
             raise HTTPException(status_code=500, detail=f"PRD 生成失败: {str(e)}")
 
+        # 附加引用信息到 Markdown
         markdown = append_citations_to_markdown(markdown, citations)
-        
+        # 记录 PRD 长度
+        logger.info(
+            "summary_prd_done session_id=%s markdown_len=%s",
+            session_id,
+            len(markdown)
+        )
+
+        # 生成 PRD ID
         prd_id = str(uuid4())
+        # 写入 PRD 内存缓存
         prds_by_id[prd_id] = {
             "id": prd_id,
             "session_id": session_id,
@@ -1409,10 +1562,20 @@ def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -
             "edited_markdown": None,
             "rag_enabled": rag_enabled
         }
+        # 写入引用缓存
         prd_citations_by_prd[prd_id] = [citation.model_dump() for citation in citations]
+        # 建立会话与 PRD 映射
         prds_by_session[session_id] = prd_id
+        # 持久化运行时状态
         save_runtime_state()
-        
+
+        # 记录保存完成日志
+        logger.info(
+            "summary_saved session_id=%s prd_id=%s",
+            session_id,
+            prd_id
+        )
+        # 返回响应
         return SummaryResponse(
             prd_id=prd_id,
             markdown=markdown,
@@ -1420,11 +1583,27 @@ def session_summary(session_id: str, payload: Optional[SummaryRequest] = None) -
             rag_used=len(citations) > 0,
             retrieval_query=transcript
         )
-    except HTTPException:
+    except HTTPException as he:
+        # 记录 HTTPException 错误日志
+        logger.error(
+            "summary_http_error session_id=%s status=%s detail=%s",
+            session_id,
+            he.status_code,
+            he.detail
+        )
+        # 继续抛出以保持接口语义
         raise
     except Exception as e:
+        # 打印完整堆栈便于排查
         import traceback
         traceback.print_exc()
+        # 记录未知异常
+        logger.exception(
+            "summary_unhandled_error session_id=%s error=%s",
+            session_id,
+            str(e)
+        )
+        # 返回 500 错误
         raise HTTPException(status_code=500, detail=f"服务器内部错误: {str(e)}")
 
 
