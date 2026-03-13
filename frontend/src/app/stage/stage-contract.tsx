@@ -44,11 +44,11 @@ export function StageContract({ prdId }: StageContractProps) {
   }, [prdId])
 
   return (
-    <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
-      <h2 className="text-xl font-medium">阶段四：合同导出</h2>
+    <div className="flex flex-col gap-4 bg-white p-4 rounded-lg shadow-md">
+      <h2 className="text-xl font-medium text-gray-900">阶段四：合同导出</h2>
       <div className="flex flex-wrap items-center gap-3">
         <button
-          className="rounded-full bg-emerald-500 px-5 py-2 text-sm font-medium text-slate-950"
+          className="rounded-full bg-emerald-600 px-5 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors"
           onClick={generateContract}
           disabled={contractLoading}
         >
@@ -56,7 +56,7 @@ export function StageContract({ prdId }: StageContractProps) {
         </button>
         {contractDownloadUrl ? (
           <a
-            className="rounded-full border border-emerald-400 px-5 py-2 text-sm font-medium text-emerald-200"
+            className="rounded-full border border-emerald-600 px-5 py-2 text-sm font-medium text-emerald-600 hover:bg-emerald-50 transition-colors"
             href={contractDownloadUrl}
             target="_blank"
             rel="noopener noreferrer"
@@ -64,10 +64,10 @@ export function StageContract({ prdId }: StageContractProps) {
             下载合同
           </a>
         ) : null}
-        <div className="text-sm text-slate-300">
+        <div className="text-sm text-gray-500">
           {contractResult ? contractResult : "尚未生成合同"}
         </div>
       </div>
-    </section>
+    </div>
   )
 }

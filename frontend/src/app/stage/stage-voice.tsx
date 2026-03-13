@@ -92,6 +92,16 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
   const registerNextRef = useRef(false)
   const verifyNextRef = useRef(false)
 
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }
+
+  useEffect(() => {
+    scrollToBottom()
+  }, [utterances])
+
   const ensureSessionId = useCallback(() => {
     if (sessionId) {
       return sessionId
@@ -252,168 +262,146 @@ export function StageVoice({ sessionId, setSessionId }: StageVoiceProps) {
     setIsListening(true)
   }, [isListening, setupVad])
 
-  const canStartListening = isListening || hasRegisteredVoiceprint
-
   return (
-    <>
-      <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="text-xl font-medium">语音采集与对话</h2>
-        <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-4">
-          <div className="text-sm font-medium text-slate-200">声纹操作指引</div>
-          <div className="mt-1 text-xs text-slate-400">
-            先填写销售 ID，再点击“下一段用于注册声纹”或“下一段用于验证声纹”，然后说一句话即可触发对应动作。若麦克风未开启，会自动开启监听。
-          </div>
-          <div className="mt-3 grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
-            <label className="grid gap-1 text-sm text-slate-300">
-              <span>销售 ID（声纹归属标识）</span>
-              <input
-                value={salesId}
-                onChange={(event) => setSalesId(event.target.value)}
-                placeholder="例如：sales_zhangsan"
-                className="rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-sm text-slate-100"
-              />
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className={`rounded-full px-4 py-2 text-xs font-medium transition ${
-                  registerNext
-                    ? "bg-amber-400 text-slate-950"
-                    : "bg-slate-700 text-white"
-                }`}
-                onClick={async () => {
-                  setRegisterResult(null)
-                  setVerifyResult(null)
-                  setVerifyNext(false)
-                  setRegisterNext(true)
-                  await ensureListening()
-                }}
-              >
-                下一段用于注册声纹
-              </button>
-              <button
-                className={`rounded-full px-4 py-2 text-xs font-medium transition ${
-                  verifyNext
-                    ? "bg-sky-400 text-slate-950"
-                    : "bg-slate-700 text-white"
-                }`}
-                onClick={async () => {
-                  setRegisterResult(null)
-                  setVerifyResult(null)
-                  setRegisterNext(false)
-                  setVerifyNext(true)
-                  await ensureListening()
-                }}
-              >
-                下一段用于验证声纹
-              </button>
-            </div>
-          </div>
-          <div className="mt-3 text-xs text-slate-400">
-            当前待执行动作：
-            {registerNext
-              ? " 下一段语音将用于注册声纹"
-              : verifyNext
-                ? " 下一段语音将用于验证声纹"
-                : " 未指定（默认进行普通转写）"}
-          </div>
+    <div className="flex h-full flex-col bg-white">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-700">
+            会话 ID: {sessionId ? sessionId.slice(0, 8) : "..."}
+          </span>
+          <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-600">
+            {asrEngineStatus}
+          </span>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            className={`rounded-full px-5 py-2 text-sm font-medium transition ${
-              canStartListening
-                ? isListening
-                  ? "bg-emerald-500 text-slate-950"
-                  : "bg-slate-700 text-white"
-                : "cursor-not-allowed bg-slate-800 text-slate-500"
-            }`}
-            disabled={!canStartListening}
-            onClick={toggleListening}
-          >
-            {isListening ? "停止监听" : "开始监听"}
-          </button>
-          {!hasRegisteredVoiceprint ? (
-            <div className="text-xs text-amber-300">
-              请先完成一次“下一段用于注册声纹”，再进入下一阶段
-            </div>
-          ) : null}
-          <div className="text-sm text-slate-300">
-            {isListening ? "麦克风已开启" : "麦克风未开启"}
-          </div>
-          <div className="text-sm text-slate-300">
-            {isSpeaking ? "检测到说话" : "等待说话"}
-          </div>
-          <div className="text-sm text-slate-300">
-            {isProcessing ? "转写中..." : "空闲"}
-          </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={salesId}
+            onChange={(e) => setSalesId(e.target.value)}
+            placeholder="输入销售 ID"
+            className="w-32 rounded border border-gray-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none"
+          />
         </div>
-        {hasRegisteredVoiceprint ? (
-          <div className="rounded-lg border border-emerald-600/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-            声纹采集状态：已完成，可进入下一阶段
-          </div>
-        ) : (
-          <div className="rounded-lg border border-amber-600/40 bg-amber-500/10 p-3 text-sm text-amber-200">
-            声纹采集状态：未完成，需先采集销售声纹
+      </div>
+
+      {/* Chat Area */}
+      <div className="flex-1 space-y-4 overflow-y-auto p-4 bg-white">
+        {utterances.length === 0 && (
+          <div className="mt-10 text-center text-gray-400">
+            <p>暂无对话记录</p>
+            <p className="text-sm">请输入销售 ID 并开始录音</p>
           </div>
         )}
-        {registerResult ? (
-          <div className="rounded-lg border border-emerald-600/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">
-            {registerResult}
-          </div>
-        ) : null}
-        {verifyResult ? (
-          <div className="rounded-lg border border-sky-600/40 bg-sky-500/10 p-3 text-sm text-sky-200">
-            {verifyResult}
-          </div>
-        ) : null}
-        {error ? (
-          <div className="rounded-lg border border-rose-600/40 bg-rose-500/10 p-3 text-sm text-rose-200">
-            {error}
-          </div>
-        ) : null}
-        <div className="grid gap-3">
-          <div className="text-sm text-slate-400">
-            当前会话：{sessionId || "待生成"}
-          </div>
-          <div className="text-sm text-slate-400">
-            ASR 当前引擎：{asrEngineStatus}
-          </div>
-          <div className="grid gap-3">
-            {utterances.length === 0 ? (
-              <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-4 text-sm text-slate-400">
-                暂无对话片段
+        {utterances.map((item) => {
+          // 简单的判断：如果 speaker 包含 salesId 或者是 "sales"，则认为是销售，显示在右侧
+          // 否则显示在左侧
+          const isSales =
+            (salesId && item.speaker.includes(salesId)) ||
+            item.speaker.toLowerCase().includes("sales")
+          return (
+            <div
+              key={item.id}
+              className={`flex flex-col ${isSales ? "items-end" : "items-start"}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-2xl px-4 py-2 ${
+                  isSales
+                    ? "bg-blue-600 text-white rounded-br-none"
+                    : "bg-gray-100 text-gray-800 rounded-bl-none"
+                }`}
+              >
+                <p>{item.text}</p>
               </div>
-            ) : (
-              utterances.map((item) => (
-                <div
-                  key={item.id}
-                  className="rounded-lg border border-slate-800 bg-slate-950/40 p-4"
-                >
-                  <div className="flex items-center justify-between text-xs text-slate-400">
-                    <span>{item.speaker}</span>
-                    <span>{new Date(item.ts).toLocaleTimeString()}</span>
-                  </div>
-                  <div className="mt-1 text-xs text-slate-400">
-                    引擎：{item.asr_fallback ? `${item.asr_engine} (fallback)` : item.asr_engine}
-                  </div>
-                  <div className="mt-2 text-sm text-slate-100">
-                    {item.text}
-                  </div>
-                </div>
-              ))
+              <span className="mt-1 text-xs text-gray-400">
+                {item.speaker} • {new Date(item.ts).toLocaleTimeString()}
+                {item.asr_fallback ? " (fallback)" : ""}
+              </span>
+            </div>
+          )
+        })}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Controls Area */}
+      <div className="border-t border-gray-200 bg-gray-50 p-4">
+        {(error || registerResult || verifyResult) && (
+          <div className="mb-2 text-sm">
+            {error && <span className="block text-red-500">{error}</span>}
+            {registerResult && (
+              <span className="block text-green-600">{registerResult}</span>
+            )}
+            {verifyResult && (
+              <span className="block text-blue-600">{verifyResult}</span>
             )}
           </div>
+        )}
+
+        <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={toggleListening}
+                        className={`flex items-center gap-2 rounded-full px-6 py-2 font-medium text-white transition-colors ${
+                        isListening
+                            ? "bg-red-500 hover:bg-red-600"
+                            : "bg-blue-600 hover:bg-blue-700"
+                        }`}
+                    >
+                        {isListening ? (
+                            <>
+                                <span className="relative flex h-3 w-3">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
+                                </span>
+                                停止录音
+                            </>
+                        ) : (
+                            "开始录音"
+                        )}
+                    </button>
+                    <div className="flex items-center gap-2 text-xs text-gray-500 ml-2">
+                        {isSpeaking && <span className="font-bold text-green-500">检测到说话...</span>}
+                        {isProcessing && <span className="text-blue-500">转写中...</span>}
+                    </div>
+                </div>
+
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => {
+                        setRegisterNext(!registerNext)
+                        setVerifyNext(false)
+                        }}
+                        className={`rounded px-3 py-1 text-xs border transition-colors ${
+                        registerNext
+                            ? "bg-amber-100 border-amber-300 text-amber-800"
+                            : "bg-white border-gray-300 text-gray-600 hover:bg-gray-100"
+                        }`}
+                    >
+                        {registerNext ? "取消注册模式" : "注册声纹模式"}
+                    </button>
+                    <button
+                        onClick={() => {
+                        setVerifyNext(!verifyNext)
+                        setRegisterNext(false)
+                        }}
+                        className={`rounded px-3 py-1 text-xs border transition-colors ${
+                        verifyNext
+                            ? "bg-sky-100 border-sky-300 text-sky-800"
+                            : "bg-white border-gray-300 text-gray-600 hover:bg-gray-100"
+                        }`}
+                    >
+                        {verifyNext ? "取消验证模式" : "验证声纹模式"}
+                    </button>
+                </div>
+            </div>
+            
+            {!hasRegisteredVoiceprint && (
+                 <div className="text-xs text-amber-600">
+                    提示：请先输入 Sales ID 并使用“注册声纹模式”录制一段语音以完成声纹注册。
+                 </div>
+            )}
         </div>
-      </section>
-      <section className="grid gap-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="text-xl font-medium">阶段一状态</h2>
-        <ul className="grid gap-2 text-slate-300">
-          <li>语音采集：已接入 VAD</li>
-          <li>ASR 转写：{asrEngineStatus}</li>
-          <li>声纹判别：{hasRegisteredVoiceprint ? "Resemblyzer 1v1（已完成销售声纹采集）" : "Resemblyzer 1v1（待完成销售声纹采集）"}</li>
-          <li>PRD 生成：待接入</li>
-          <li>POC 渲染：待接入</li>
-        </ul>
-      </section>
-    </>
+      </div>
+    </div>
   )
 }

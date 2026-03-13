@@ -15,44 +15,63 @@ export default function Home() {
   const [knowledgeDrawerOpen, setKnowledgeDrawerOpen] = useState(false)
 
   return (
-    <div className="min-h-screen">
+    <div className="flex h-screen w-full overflow-hidden bg-white text-slate-900">
       <ModelConfigDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
       <KnowledgeDrawer
         open={knowledgeDrawerOpen}
         onClose={() => setKnowledgeDrawerOpen(false)}
       />
 
-      <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 p-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-2">
-            <h1 className="text-3xl font-semibold">销售 AI 闭环系统</h1>
-            <p className="text-slate-300">
-              语音切片、实时对话、PRD 生成、POC 渲染、合同导出
-            </p>
+      {/* Left Main Area: Chat Interface */}
+      <main className="flex flex-1 flex-col border-r border-gray-200 min-w-0">
+        <header className="flex h-16 items-center justify-between border-b border-gray-200 px-6 bg-white shrink-0 z-10">
+          <div>
+            <h1 className="text-lg font-bold text-gray-900">ApexSales AI</h1>
+            <p className="text-xs text-gray-500">语音转写与对话工作台</p>
           </div>
-          <button
-            className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-100"
-            onClick={() => setDrawerOpen(true)}
-          >
-            模型配置
-          </button>
-          <button
-            className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-100"
-            onClick={() => setKnowledgeDrawerOpen(true)}
-          >
-            知识库管理
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="rounded-full border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+              onClick={() => setDrawerOpen(true)}
+            >
+              模型配置
+            </button>
+            <button
+              className="rounded-full border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 transition-colors"
+              onClick={() => setKnowledgeDrawerOpen(true)}
+            >
+              知识库
+            </button>
+          </div>
         </header>
-        <StageVoice sessionId={sessionId} setSessionId={setSessionId} />
-        <StagePrd
-          sessionId={sessionId}
-          setSessionId={setSessionId}
-          prdId={prdId}
-          setPrdId={setPrdId}
-        />
-        <StagePoc prdId={prdId} />
-        <StageContract prdId={prdId} />
+        
+        {/* Chat Component takes remaining space */}
+        <div className="flex-1 overflow-hidden relative">
+          <StageVoice sessionId={sessionId} setSessionId={setSessionId} />
+        </div>
       </main>
+
+      {/* Right Sidebar: Functionality Stages */}
+      <aside className="flex w-[500px] flex-col overflow-y-auto bg-gray-50 border-l border-gray-200 shadow-[inset_4px_0_8px_-4px_rgba(0,0,0,0.05)] shrink-0">
+        <div className="flex flex-col gap-6 p-6">
+            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+                <StagePrd
+                sessionId={sessionId}
+                setSessionId={setSessionId}
+                prdId={prdId}
+                setPrdId={setPrdId}
+                />
+            </div>
+            
+            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+                <StagePoc prdId={prdId} />
+            </div>
+            
+            <div className="rounded-xl bg-white shadow-sm border border-gray-200 overflow-hidden">
+                <StageContract prdId={prdId} />
+            </div>
+        </div>
+      </aside>
     </div>
   )
 }

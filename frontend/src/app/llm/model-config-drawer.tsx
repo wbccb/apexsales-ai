@@ -146,38 +146,38 @@ export function ModelConfigDrawer({ open, onClose }: ModelConfigDrawerProps) {
       className={`fixed inset-0 z-40 ${open ? "" : "pointer-events-none"}`}
     >
       <div
-        className={`absolute inset-0 bg-slate-950/70 transition-opacity ${
+        className={`absolute inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity ${
           open ? "opacity-100" : "opacity-0"
         }`}
         onClick={onClose}
       />
       <div
-        className={`absolute left-0 top-0 h-full w-[360px] border-r border-slate-800 bg-slate-900 p-6 shadow-2xl transition-transform ${
+        className={`absolute left-0 top-0 h-full w-[360px] border-r border-gray-200 bg-white p-6 shadow-2xl transition-transform ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="flex items-center justify-between">
-          <div className="text-lg font-semibold">模型配置</div>
+        <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+          <div className="text-lg font-semibold text-gray-900">模型配置</div>
           <button
-            className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-200"
+            className="rounded-full border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
             onClick={onClose}
           >
             关闭
           </button>
         </div>
-        <div className="mt-2 text-xs text-slate-400">
+        <div className="mt-4 text-xs text-gray-500 bg-blue-50 p-3 rounded-lg border border-blue-100">
           为不同阶段设置 BASE_URL、MODEL_NAME、API_KEY
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
-            className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-200"
+            className="rounded-full border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
             onClick={fetchModelConfigs}
             disabled={modelLoading}
           >
             {modelLoading ? "加载中..." : "刷新"}
           </button>
           <button
-            className="rounded-full bg-indigo-500 px-3 py-1 text-xs font-medium text-white"
+            className="rounded-full bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 transition-colors"
             onClick={saveModelConfigs}
             disabled={modelSaving}
           >
@@ -185,56 +185,59 @@ export function ModelConfigDrawer({ open, onClose }: ModelConfigDrawerProps) {
           </button>
         </div>
         {modelError ? (
-          <div className="mt-4 rounded-lg border border-rose-600/40 bg-rose-500/10 p-3 text-xs text-rose-200">
+          <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-600">
             {modelError}
           </div>
         ) : null}
         {modelSuccess ? (
-          <div className="mt-4 rounded-lg border border-emerald-600/40 bg-emerald-500/10 p-3 text-xs text-emerald-200">
+          <div className="mt-4 rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-600">
             {modelSuccess}
           </div>
         ) : null}
-        <div className="mt-6 grid gap-4">
+        <div className="mt-6 grid gap-4 max-h-[calc(100vh-250px)] overflow-y-auto pr-1">
           {MODEL_STAGES.map((stage) => {
             const config = modelConfigs[stage.key] ?? buildEmptyConfig(stage.key)
             return (
               <div
                 key={stage.key}
-                className="rounded-lg border border-slate-800 bg-slate-950/40 p-4"
+                className="rounded-lg border border-gray-200 bg-gray-50 p-4 hover:border-indigo-200 transition-colors"
               >
-                <div className="text-sm font-medium text-slate-100">{stage.label}</div>
-                <div className="mt-3 grid gap-3">
-                  <div className="grid gap-2">
-                    <label className="text-xs text-slate-400">BASE_URL</label>
+                <div className="text-sm font-medium text-gray-900 mb-3 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
+                    {stage.label}
+                </div>
+                <div className="grid gap-3">
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium text-gray-500">BASE_URL</label>
                     <input
                       value={config.base_url}
                       onChange={(event) =>
                         updateModelField(stage.key, "base_url", event.target.value)
                       }
-                      className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs text-slate-100"
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 focus:border-indigo-500 focus:outline-none placeholder:text-gray-400"
                       placeholder="https://api.example.com/v1/chat/completions"
                     />
                   </div>
-                  <div className="grid gap-2">
-                    <label className="text-xs text-slate-400">MODEL_NAME</label>
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium text-gray-500">MODEL_NAME</label>
                     <input
                       value={config.model_name}
                       onChange={(event) =>
                         updateModelField(stage.key, "model_name", event.target.value)
                       }
-                      className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs text-slate-100"
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 focus:border-indigo-500 focus:outline-none placeholder:text-gray-400"
                       placeholder="gpt-4o-mini"
                     />
                   </div>
-                  <div className="grid gap-2">
-                    <label className="text-xs text-slate-400">API_KEY</label>
+                  <div className="grid gap-1.5">
+                    <label className="text-xs font-medium text-gray-500">API_KEY</label>
                     <input
                       type="password"
                       value={config.api_key}
                       onChange={(event) =>
                         updateModelField(stage.key, "api_key", event.target.value)
                       }
-                      className="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs text-slate-100"
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs text-gray-900 focus:border-indigo-500 focus:outline-none placeholder:text-gray-400"
                       placeholder="sk-***"
                     />
                   </div>
