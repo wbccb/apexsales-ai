@@ -153,6 +153,23 @@ class KnowledgeRetrieveResponse(BaseModel):
     matches: List[KnowledgeMatch]
 
 
+class KnowledgeChunkItem(BaseModel):
+    """知识库切片项模型"""
+    document_id: str
+    chunk_id: str
+    chunk_index: int
+    page_no: Optional[int]
+    token_count: int
+    content: str
+
+
+class KnowledgeChunksResponse(BaseModel):
+    """知识库切片列表响应模型"""
+    document_id: str
+    total: int
+    chunks: List[KnowledgeChunkItem]
+
+
 class ModelConfigItem(BaseModel):
     """模型配置项模型"""
     stage: str

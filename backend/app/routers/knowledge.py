@@ -10,7 +10,9 @@ from ..models.schemas import (
     KnowledgeReindexResponse,
     KnowledgeRetrieveRequest,
     KnowledgeRetrieveResponse,
-    KnowledgeMatch
+    KnowledgeMatch,
+    KnowledgeChunkItem,
+    KnowledgeChunksResponse
 )
 from ..core import state
 from ..core.storage import get_knowledge_storage_dir
@@ -155,3 +157,30 @@ def retrieve_knowledge(payload: KnowledgeRetrieveRequest) -> KnowledgeRetrieveRe
     ]
     
     return KnowledgeRetrieveResponse(matches=matches)
+
+
+@router.get("/documents/{document_id}/chunks", response_model=KnowledgeChunksResponse)
+def get_document_chunks(document_id: str) -> KnowledgeChunksResponse:
+    """获取指定文档的切片列表"""
+    document = state.knowledge_documents_by_id.get(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+
+    chunks = list(state.knowledge_chunks_by_doc.get(document_id, []))
+    chunks.sort(key=lambda item: int(item.get("chunk_index", 0)))
+    items = [
+        KnowledgeChunkItem(
+            document_id=str(item.get("document_id", document_id)),
+            chunk_id=str(item.get("chunk_id", "")),
+            chunk_index=int(item.get("chunk_index", 0)),
+            page_no=cast(Optional[int], item.get("page_no")),
+            token_count=int(item.get("token_count", 0)),
+            content=str(item.get("content", ""))
+        )
+        for item in chunks
+    ]
+    return KnowledgeChunksResponse(
+        document_id=document_id,
+        total=len(items),
+        chunks=items
+    )
