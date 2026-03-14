@@ -3,7 +3,6 @@
 ## 📖 项目简介
 本项目是一个面向销售场景的 **AI 全链路工作流系统**。旨在通过人工智能技术，打通从“客户沟通录音”到“业务系统演示”，再到“合同自动生成”的完整闭环。系统以快速演示和高可用性为目标，帮助销售人员在与客户沟通后，一键生成结构化需求、可交互的 POC（概念验证）前端页面以及精准的报价合同。
 
-
 ## ✨ 核心特性 (Features)
 
 ### 🎙️ 1. 智能语音采集与识别 (ASR & Voiceprint)
@@ -56,4 +55,27 @@
 | **会话记录** | `/session/{session_id}/utterances` | `GET` | 获取会话逐字稿 |
 | | `/session/{session_id}/summary` | `POST` | 生成会话总结与 PRD |
 | **PRD 管理** | `/prd/{prd_id}/save` | `POST` | 保存修改后的 PRD |
-| **POC 演示** | `/prd/{prd_id}/poc` | `POST
+| **POC 演示** | `/prd/{prd_id}/poc` | `POST` | 基于 PRD 生成单文件 HTML POC |
+| | `/poc/{share_uuid}` | `GET` | 根据短链获取 POC 内容并渲染 |
+| **合同导出** | `/contract/{prd_id}` | `POST` | 生成最终报价合同 (结合 RAG) |
+| | `/contract/{contract_id}/download`| `GET` | 下载合同 PDF |
+
+*(注：RAG 相关的文档上传与检索接口依据具体实现路径进行补充)*
+
+---
+
+## 🚀 快速开始 (Getting Started)
+
+### 1. 环境准备
+确保你的本地环境已安装以下依赖：
+* Node.js (v16+ 推荐) / Python (后端相关)
+* 数据库 (MySQL/PostgreSQL，视后端具体选型而定)
+* 向量数据库 (如 ChromaDB/Milvus/Qdrant，用于 RAG 支持)
+
+### 2. 配置环境变量
+复制 `.env.example` 为 `.env` 文件，并填入必要的 LLM 密钥与基础配置
+
+
+### 3. 运行项目
+- 启动后端：在仓库根目录执行 `uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000`
+- 启动前端：进入 frontend 目录执行 `npm install` 后运行 `npm run dev`
