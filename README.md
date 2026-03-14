@@ -60,8 +60,6 @@
 | **合同导出** | `/contract/{prd_id}` | `POST` | 生成最终报价合同 (结合 RAG) |
 | | `/contract/{contract_id}/download`| `GET` | 下载合同 PDF |
 
-*(注：RAG 相关的文档上传与检索接口依据具体实现路径进行补充)*
-
 ---
 
 ## 🚀 快速开始 (Getting Started)
